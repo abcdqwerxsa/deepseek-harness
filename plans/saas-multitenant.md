@@ -50,7 +50,7 @@
 
 - [x] **M0 地基**：新分支 `feat/saas-platform`；`tenant-profile` 置备器（模板 + telemetry-off patch + 版本锁）；隔离 home 下 `dsh --profile acp --dump-config` 验证组合
 - [x] **M1 单租户驱动验证**：`tenant-acp.e2e.ts`（3/3 过）：工具往返、跨进程 session/list 持久化、SIGKILL 中断后 resume、暖 home 冷启动 <5s。**审批 e2e 延后至 M2**：审批仅在沙箱升级重试（两段异参）时触发，单 toolArguments mock 无法剧本化；M2 的 BFF 审批转发必须打通此链路，届时补
-- [ ] **M2 编排器 + BFF**：✅ orchestrator 核心已落地（`packages/platform/orchestrator`：spawn/同租户去重/并发上限+队列+驱逐/空闲回收，单测+e2e 全绿，提交 c49796e79）；剩余：acp-gateway + OIDC/dev 认证 + transcript 落库 + 审批 WS 转发（含延后的审批 e2e）
+- [x] **M2 编排器 + BFF**：orchestrator（c49796e79）+ BFF（ad3840ecfa：REST 透传/WS 更新扇出/审批转发 fail-closed/SQLite transcript/dev-token 认证+Authenticator 接口）全部落地，单测 28 + e2e 7 全绿。审批的 spawn 进程级 e2e仍延后（mock LLM 需按调用序 tool arguments）；OIDC 等部署方 IdP 确定后按 Authenticator 接口接入
 - [ ] **M3 门户前端**：会话列表/chat/审批卡（ACP 更新流直渲染，ui-* 机会复用）；双租户隔离 E2E
 - [ ] **M4 收尾**：用量报表（session 事件聚合，替代计费）、审计日志、部署文档（内网单机→多机预留）、内部安全评审（SAFETY.md 要求；公网审计不适用内网但保留隔离要求）
 
