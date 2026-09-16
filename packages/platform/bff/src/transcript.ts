@@ -51,6 +51,7 @@ export class TranscriptStore {
         detail TEXT
       )
     `)
+    this.db.exec('CREATE INDEX IF NOT EXISTS audit_tenant_seq ON audit (tenant_id, seq)')
   }
 
   append(tenantId: string, sessionId: string, update: unknown): void {
@@ -92,16 +93,25 @@ export class TranscriptStore {
   }
 
   /**
-   * Per-tenant usage aggregates from the observed update stream: sessions,
-   * turns, messages, tool calls, and the latest context occupancy per session
-   * (ACP reports occupancy, not billing-grade token counts — the recorded
-   * ceiling for a v1 usage report).
+   * Per-tenant usage aggregates: sessions, turns (successful session-prompt
+   * audit rows per session — dsh's ACP bridge emits no user-message updates),
+   * agent message chunks, tool calls, and the peak context occupancy observed
+   * per session. ACP reports occupancy, not billing-grade token counts; chunk
+   * counts are not distinct-message counts — the recorded v1 ceiling.
    */
   usage(tenantId: string): UsageReport {
+    const promptCounts = new Map<string, number>()
+    const auditRows = this.db.prepare(
+      "SELECT detail FROM audit WHERE tenant_id = ? AND event = 'session-prompt'",
+    ).all(tenantId)
+    for (const row of auditRows) {
+      const raw = (row as { detail: string | null }).detail ?? ''
+      const sessionId = raw.split(' ')[0] ?? ''
+      if (sessionId !== '') promptCounts.set(sessionId, (promptCounts.get(sessionId) ?? 0) + 1)
+    }
     const rows = this.db.prepare(`
       SELECT
         session_id AS sessionId,
-        SUM(CASE WHEN json_extract(update_json, '$.sessionUpdate') = 'user_message_chunk' THEN 1 ELSE 0 END) AS turns,
         SUM(CASE WHEN json_extract(update_json, '$.sessionUpdate') = 'agent_message_chunk' THEN 1 ELSE 0 END) AS messages,
         SUM(CASE WHEN json_extract(update_json, '$.sessionUpdate') = 'tool_call' THEN 1 ELSE 0 END) AS toolCalls,
         MAX(CASE WHEN json_extract(update_json, '$.sessionUpdate') = 'usage_update'
@@ -117,7 +127,7 @@ export class TranscriptStore {
       const number = (value: number | string | null | undefined): number => (typeof value === 'number' ? value : 0)
       return {
         sessionId: String(record.sessionId),
-        turns: number(record.turns),
+        turns: promptCounts.get(String(record.sessionId)) ?? 0,
         messages: number(record.messages),
         toolCalls: number(record.toolCalls),
         contextUsed: typeof record.contextUsed === 'number' ? record.contextUsed : null,

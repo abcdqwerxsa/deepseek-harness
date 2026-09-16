@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnAcpStdioRuntime, type TenantRuntimeFactory } from '@deepseek-ai/dsh-orchestrator'
 import { provisionTenantHome } from '@deepseek-ai/dsh-tenant-profile'
@@ -21,6 +22,8 @@ export interface ComposeTenantRuntimeOptions {
   readonly baseUrl?: string
   /** Version-lock stamp recorded in each tenant manifest. */
   readonly dshVersion: string
+  /** Optional settings.yaml content written into each home (tests point the adapter at a mock). */
+  readonly settingsYaml?: string
 }
 
 export function composeTenantRuntimeFactory(options: ComposeTenantRuntimeOptions): TenantRuntimeFactory {
@@ -30,6 +33,9 @@ export function composeTenantRuntimeFactory(options: ComposeTenantRuntimeOptions
       workspaceDir: join(options.tenantsRoot, tenantId, 'workspace'),
       dshVersion: options.dshVersion,
     })
+    if (options.settingsYaml !== undefined) {
+      writeFileSync(join(homeDir, 'settings.yaml'), options.settingsYaml)
+    }
     return spawnAcpStdioRuntime(tenantId, {
       command: process.execPath,
       args: [options.dshBin, '--profile', 'acp'],

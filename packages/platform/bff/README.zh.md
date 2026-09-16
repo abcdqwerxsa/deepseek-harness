@@ -15,7 +15,7 @@ kind: "package-library"
 
 - 作为库导入并调用 `startPlatformServer(options)`；默认监听 127.0.0.1 的 OS 分配端口——内网部署在前面放自己的 TLS 网关。
 - 认证用自带的 `devTokenAuthenticator`（静态 token→租户映射）或任意 `Authenticator` 实现；HTTP 用 `Authorization: Bearer`，WebSocket 升级用 `?token=`。
-- REST：`GET /api/sessions`、`POST /api/session/new {cwd}`、`POST /api/session/:id/prompt {text}`（阻塞到回合结束）、`POST /api/session/:id/close`、`POST /api/session/:id/resume {cwd}`、`GET /api/session/:id/transcript`。
+- REST：`GET /api/sessions`、`POST /api/session/new {cwd}`、`POST /api/session/:id/prompt {text}`（阻塞到回合结束）、`POST /api/session/:id/close`、`POST /api/session/:id/resume {cwd}`、`GET /api/session/:id/transcript`、`GET /api/usage`（更新流聚合）、`GET /api/audit`（该租户轨迹）。
 - WebSocket `/ws?token=` 接收 `{type:'session-update'}` 与 `{type:'permission-request'}`；发送 `{type:'permission-response', id, response}` 应答。
 - 刻意尚未实现对接上游 IdP 的 OIDC：部署方有 IdP 时针对其 token 校验实现 `Authenticator` 即可。
 
@@ -24,6 +24,31 @@ kind: "package-library"
 `startPlatformServer` 同时在 `/` 与 `/portal.js` 服务租户门户：一个刻意无工具链的页面（`portal/`），含 token 连接、会话列表、按 workspace 路径新建会话、由 transcript 接口 + 实时 WebSocket 更新驱动的聊天视图，以及可点击的审批卡。把它放在同源，或放在会代理 `/api` 与 `/ws` 的网关之后；其消费的面就是稳定契约。
 
 每个 spawn 出的运行时由 BFF 包装一次：其更新流同时喂 transcript 表与该租户的 socket，其审批应答者带超时地路由到该租户的活跃 socket。服务刻意零框架（`node:http`、`ws`、`node:sqlite`）且单进程；跨主机扩展是同一接口之后的未来工作。
+
+## 部署（内网单机）
+
+在一个小入口脚本里组装运行时工厂、令牌与服务：
+
+```js
+import { composeTenantRuntimeFactory, devTokenAuthenticator, startPlatformServer } from '@deepseek-ai/dsh-platform-bff'
+
+const platform = await startPlatformServer({
+  authenticator: devTokenAuthenticator(new Map(JSON.parse(process.env.PLATFORM_TOKENS ?? '[]'))),
+  createRuntime: composeTenantRuntimeFactory({
+    tenantsRoot: process.env.PLATFORM_TENANTS_ROOT ?? '/srv/platform/tenants',
+    dshBin: process.env.PLATFORM_DSH_BIN ?? '/srv/platform/dsh/apps/cli/lib/bin.js',
+    apiKey: process.env.DEEPSEEK_API_KEY ?? '',
+    dshVersion: process.env.PLATFORM_DSH_VERSION ?? 'unpinned',
+    baseUrl: process.env.DEEPSEEK_BASE_URL,
+  }),
+  dbPath: process.env.PLATFORM_DB ?? '/srv/platform/platform.sqlite',
+  port: Number(process.env.PLATFORM_PORT ?? 8080),
+})
+console.log(`platform listening on ${platform.port}`)
+```
+
+`PLATFORM_TOKENS` 是 `[token, tenantId]` 的 JSON 数组。服务默认绑定
+127.0.0.1——前置内网 TLS 网关。审计表与业务同库；全量运维访问走 SQL 直读。
 
 ## 已知限制与延后工作
 

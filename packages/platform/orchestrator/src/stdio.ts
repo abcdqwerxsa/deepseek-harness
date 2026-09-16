@@ -70,7 +70,6 @@ export async function spawnAcpStdioRuntime(tenantId: string, spec: StdioRuntimeS
     request<T>(method: string, params: unknown): Promise<T> {
       if (disposed) return Promise.reject(new Error(`orchestrator: tenant ${JSON.stringify(tenantId)} runtime is disposed`))
       lastUsedAt = Date.now()
-      // oxlint-disable-next-line typescript/no-unnecessary-type-assertion -- tsc 5 requires this cast; typescript-go disagrees
       return client.request(method, params) as Promise<T>
     },
     onUpdate(listener): () => void {

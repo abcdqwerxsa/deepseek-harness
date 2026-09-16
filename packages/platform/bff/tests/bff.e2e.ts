@@ -1,11 +1,10 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import WebSocket from 'ws'
 import { startMockLlmServer, type MockLlmServer } from '@deepseek-ai/dsh-llm-mock-server'
-import { provisionTenantHome } from '@deepseek-ai/dsh-tenant-profile'
-import { spawnAcpStdioRuntime } from '@deepseek-ai/dsh-orchestrator'
+import { composeTenantRuntimeFactory } from '../src/compose.ts'
 import { afterEach, describe, expect, it } from 'vitest'
 import { devTokenAuthenticator } from '../src/auth.ts'
 import { messageText, startPlatformServer, type PlatformServer } from '../src/index.ts'
@@ -32,36 +31,21 @@ afterEach(async () => {
   while (cleanupFns.length > 0) await cleanupFns.pop()!()
 })
 
-function provisionTenantRoot(tenantId: string): { homeDir: string; workspaceDir: string } {
-  const root = mkdtempSync(join(tmpdir(), `dsh-bff-${tenantId}-`))
-  cleanupFns.push(() => { rmSync(root, { recursive: true, force: true }) })
-  const { homeDir, workspaceDir } = provisionTenantHome({
-    homeDir: join(root, 'home'),
-    workspaceDir: join(root, 'workspace'),
-    dshVersion: 'bff-e2e',
-  })
-  writeFileSync(join(homeDir, 'settings.yaml'), 'llm-deepseek:\n  protocol: chat-completions\n')
-  return { homeDir, workspaceDir }
-}
-
 async function startBff(server0: MockLlmServer): Promise<PlatformServer> {
+  // The production glue drives this e2e: per-tenant provisioned homes under
+  // a mkdtemp tenants root, mock provider via baseUrl + settings override.
+  const tenantsRoot = mkdtempSync(join(tmpdir(), 'dsh-bff-tenants-'))
+  cleanupFns.push(() => { rmSync(tenantsRoot, { recursive: true, force: true }) })
   const platform = await startPlatformServer({
     authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha'], [TOKEN_B, 'beta']])),
-    createRuntime: async (tenantId) => {
-      const { homeDir, workspaceDir } = provisionTenantRoot(tenantId)
-      return spawnAcpStdioRuntime(tenantId, {
-        command: process.execPath,
-        args: [dshBin, '--profile', 'acp'],
-        cwd: workspaceDir,
-        env: {
-          ...process.env,
-          DSH_HOME: homeDir,
-          DSH_TELEMETRY_DISABLED: '1',
-          DEEPSEEK_API_KEY: 'bff-e2e-key',
-          DEEPSEEK_BASE_URL: server0.baseURL,
-        },
-      })
-    },
+    createRuntime: composeTenantRuntimeFactory({
+      tenantsRoot,
+      dshBin,
+      apiKey: 'bff-e2e-key',
+      baseUrl: server0.baseURL,
+      dshVersion: 'bff-e2e',
+      settingsYaml: 'llm-deepseek:\n  protocol: chat-completions\n',
+    }),
     maxConcurrent: 2,
   })
   cleanupFns.push(() => platform.close())
@@ -143,5 +127,14 @@ describe('platform BFF over real spawned runtimes', () => {
     expect(foreign).toEqual([])
 
     expect((await api(platform, TOKEN_A, `/api/session/${sessionId}/close`, { method: 'POST' })).status).toBe(200)
+
+    // Usage aggregates reflect the real stack: one audited turn and at least
+    // the streamed reply chunk from the real child's update stream.
+    const usage = await (await api(platform, TOKEN_A, '/api/usage')).json() as {
+      totals: { sessions: number; turns: number; messages: number }
+    }
+    expect(usage.totals.sessions).toBeGreaterThanOrEqual(1)
+    expect(usage.totals.turns).toBeGreaterThanOrEqual(1)
+    expect(usage.totals.messages).toBeGreaterThanOrEqual(1)
   }, TEST_BUDGET_MS)
 })
