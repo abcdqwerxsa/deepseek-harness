@@ -52,7 +52,7 @@
 - [x] **M1 单租户驱动验证**：`tenant-acp.e2e.ts`（3/3 过）：工具往返、跨进程 session/list 持久化、SIGKILL 中断后 resume、暖 home 冷启动 <5s。**审批 e2e 延后至 M2**：审批仅在沙箱升级重试（两段异参）时触发，单 toolArguments mock 无法剧本化；M2 的 BFF 审批转发必须打通此链路，届时补
 - [x] **M2 编排器 + BFF**：orchestrator（c49796e79）+ BFF（ad3840ecfa：REST 透传/WS 更新扇出/审批转发 fail-closed/SQLite transcript/dev-token 认证+Authenticator 接口）全部落地，单测 28 + e2e 7 全绿。审批的 spawn 进程级 e2e仍延后（mock LLM 需按调用序 tool arguments）；OIDC 等部署方 IdP 确定后按 Authenticator 接口接入
 - [x] **M3 门户前端**：零构建门户（`packages/platform/bff/portal/`，BFF 同源服务）：token 连接/会话列表/新建会话/chat（transcript+WS 实时）/审批卡；JSDOM 全页驱动 spec + 双观察者隔离用例 + e2e 同源服务断言（提交 28e656e8a5）。ui-* 富组件复用降为 M3+ 打磨项
-- [ ] **M4 收尾**：用量报表（session 事件聚合，替代计费）、审计日志、部署文档（内网单机→多机预留）、内部安全评审（SAFETY.md 要求；公网审计不适用内网但保留隔离要求）
+- [x] **M4 收尾**：`GET /api/usage`（更新流聚合：会话/回合/消息/工具调用/上下文占用）+ `GET /api/audit`（租户审计轨迹，认证失败落 unknown 桶）+ `composeTenantRuntimeFactory` 部署胶水（README 含可运行入口脚本示例）+ `packages/platform/SECURITY-NOTES.md`（评审轮次/已保证性质/部署前缺口清单）；门户 P1 修复（审批卡复活/wss 自适应/README 措辞）（提交 91e5813e5d）
 
 ## Verification
 
