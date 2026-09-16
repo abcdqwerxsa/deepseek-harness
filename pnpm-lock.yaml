@@ -8200,6 +8200,8 @@ importers:
         specifier: workspace:^
         version: link:../../interaction/user-questions
 
+  packages/platform/tenant-profile: {}
+
   packages/preset/agent-presets:
     dependencies:
       '@deepseek-ai/schemastery':
