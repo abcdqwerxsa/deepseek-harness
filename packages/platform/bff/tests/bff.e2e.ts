@@ -76,6 +76,22 @@ function api(platform: PlatformServer, token: string, path: string, init: Reques
 }
 
 describe('platform BFF over real spawned runtimes', () => {
+  it('serves the build-free portal page from the same origin', async () => {
+    const platform = await startBff(await (async () => {
+      const server = await startMockLlmServer({ sequence: ['success'], apiKey: 'bff-e2e-key', successText: 'x', repeatLast: true })
+      cleanupFns.push(() => server.close())
+      return server
+    })())
+    const page = await fetch(`http://127.0.0.1:${platform.port}/`)
+    expect(page.status).toBe(200)
+    expect(page.headers.get('content-type')).toContain('text/html')
+    const html = await page.text()
+    expect(html).toContain('租户会话')
+    expect(html).toContain('portal.js')
+    const script = await fetch(`http://127.0.0.1:${platform.port}/portal.js`)
+    expect(script.status).toBe(200)
+  }, TEST_BUDGET_MS)
+
   it('drives a session through REST, streams updates over WS, and persists transcript', async () => {
     const mock = await startMockLlmServer({
       sequence: ['success'],

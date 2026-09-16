@@ -16,7 +16,8 @@
   },
   "files": [
     "lib/index.js",
-    "lib/types/**/*.d.ts"
+    "lib/types/**/*.d.ts",
+    "portal"
   ],
   "dependencies": {
     "@deepseek-ai/dsh-orchestrator": "workspace:^",
@@ -25,7 +26,8 @@
   },
   "devDependencies": {
     "@deepseek-ai/dsh-llm-mock-server": "workspace:^",
-    "@types/ws": "^8.18.1"
+    "@types/ws": "^8.18.1",
+    "jsdom": "29.1.1"
   },
   "license": "MIT"
 }

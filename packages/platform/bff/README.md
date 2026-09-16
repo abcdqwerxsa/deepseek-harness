@@ -19,7 +19,9 @@ Use `@deepseek-ai/dsh-platform-bff` as the serving layer between the tenant port
 - WebSocket `/ws?token=` receives `{type:'session-update'}` and `{type:'permission-request'}`; send `{type:'permission-response', id, response}` to answer.
 - OIDC against an upstream IdP is deliberately not implemented yet: implement `Authenticator` against your IdP's token verification when the deployment has one.
 
-## Understand the implementation
+## The build-free portal
+
+`startPlatformServer` also serves the tenant portal at `/` and `/portal.js`: a deliberate no-toolchain page (`portal/`) with token connect, session list, new-session by workspace path, a chat view fed by the transcript endpoint plus live WebSocket updates, and clickable permission cards. Drive it from any static origin by hosting the same two files; the API surfaces it consumes are the stable contract.
 
 Every spawned runtime is wrapped once by the BFF: its update stream feeds both the transcript table and the tenant's sockets, and its permission answerer routes to the tenant's live sockets with a per-request timeout. The service is intentionally framework-free (`node:http`, `ws`, `node:sqlite`) and single-process; scale-out across hosts is future work behind the same interface.
 
@@ -27,4 +29,5 @@ Every spawned runtime is wrapped once by the BFF: its update stream feeds both t
 
 - Listing sessions spawns the tenant runtime on demand (`session/list` reads the profile persistence root through a live process); a direct persistence reader would avoid the cold start.
 - No CORS, rate limiting, or request body size caps yet — the internal gateway in front owns those.
-- A spawned-process `request_permission` e2e is still deferred (needs per-call tool arguments in the mock LLM server); BFF forwarding logic is locked by fake-runtime tests.
+- A spawned-process `request_permission` e2e is still deferred (needs per-call tool arguments in the mock LLM server); BFF forwarding logic is locked by fake-runtime tests and a full portal-drive JSDOM spec.
+- The portal renders `agent_message_chunk` text and one-line summaries of other update kinds; rich tool-call rendering and ui-* component reuse are M3+ polish.

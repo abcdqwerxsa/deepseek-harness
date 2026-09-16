@@ -1,5 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { WebSocketServer, type WebSocket } from 'ws'
 import {
   TenantRuntimeManager,
@@ -48,6 +51,12 @@ interface TenantSockets {
   readonly sockets: Set<WebSocket>
   readonly pending: Map<string, { request: unknown; resolve: (response: unknown) => void; timer: NodeJS.Timeout }>
 }
+
+/** The build-free tenant portal served at `/` (and its script). */
+const PORTAL_FILES: ReadonlyMap<string, readonly [contentType: string, body: string]> = new Map([
+  ['/', ['text/html; charset=utf-8', readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'portal', 'index.html'), 'utf8')]],
+  ['/portal.js', ['text/javascript; charset=utf-8', readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'portal', 'portal.js'), 'utf8')]],
+])
 
 export async function startPlatformServer(options: PlatformServerOptions): Promise<PlatformServer> {
   const permissionTimeoutMs = options.permissionTimeoutMs ?? 5 * 60_000
@@ -202,6 +211,18 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
+    if (request.method === 'GET' && url.pathname !== '/api/') {
+      const portalFile = PORTAL_FILES.get(url.pathname)
+      if (portalFile !== undefined) {
+        response.writeHead(200, { 'content-type': portalFile[0], 'cache-control': 'no-store' })
+        response.end(portalFile[1])
+        return
+      }
+      if (!url.pathname.startsWith('/api/')) {
+        json(response, 404, { error: 'not found' })
+        return
+      }
+    }
     const token = bearerOf(request)
     const principal = token === undefined ? undefined : options.authenticator.authenticateToken(token)
     if (principal === undefined) {
