@@ -178,9 +178,15 @@ interface RecordedManifest {
 }
 
 function readRecordedManifest(path: string): { manifest?: RecordedManifest; problem?: string } {
+  let text: string
+  try {
+    text = readFileSync(path, 'utf8')
+  } catch (error) {
+    return { problem: `unreadable (${error instanceof Error ? error.message : String(error)})` }
+  }
   let parsed: unknown
   try {
-    parsed = JSON.parse(readFileSync(path, 'utf8'))
+    parsed = JSON.parse(text)
   } catch (error) {
     return { problem: `not valid JSON (${error instanceof Error ? error.message : String(error)})` }
   }

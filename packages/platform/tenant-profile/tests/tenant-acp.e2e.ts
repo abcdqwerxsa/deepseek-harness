@@ -120,7 +120,6 @@ function spawnTenantAcp(
     })
   const client = clientApp.connect(ndJsonStream(
     Writable.toWeb(child.stdin),
-    // oxlint-disable-next-line typescript/no-unnecessary-type-assertion -- tsc 5 requires this cast; typescript-go disagrees
     Readable.toWeb(passthrough) as ReadableStream<Uint8Array>,
   )).agent
   return {

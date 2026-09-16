@@ -382,6 +382,7 @@
     { "path": "./packages/lsp/lsp-stdio" },
     { "path": "./packages/lsp/tool-lsp" },
     { "path": "./packages/platform/tenant-profile" },
+    { "path": "./packages/platform/orchestrator" },
     { "path": "./apps/cli" },
     { "path": "./apps/desktop-host" },
     { "path": "./apps/desktop" }
