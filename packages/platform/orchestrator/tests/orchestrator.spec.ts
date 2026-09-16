@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { TenantRuntimeManager, type TenantRuntime } from '../src/index.ts'
+import { AcpEventHub, TenantRuntimeManager, type TenantRuntime } from '../src/index.ts'
 
 /**
  * Manager logic against fake runtimes: no processes, no I/O. Every fake keeps
@@ -22,7 +22,9 @@ function fakeRuntime(tenantId: string, log: string[]): TenantRuntime {
     dispose: async (graceMs: number) => {
       log.push(`dispose:${tenantId}:${graceMs}`)
     },
-    exited: () => Promise.resolve(),
+    // A live process never settles exited(); matching that in fakes keeps the
+    // manager's exit watcher meaningful instead of instantly dropping entries.
+    exited: () => new Promise<void>(() => {}),
   }
 }
 
@@ -161,6 +163,95 @@ describe('TenantRuntimeManager', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('rejects withTenant when the spawn fails and retries fresh', async () => {
+    const failures: string[] = []
+    let attempts = 0
+    const manager = new TenantRuntimeManager({
+      createRuntime: async (tenantId) => {
+        attempts += 1
+        if (attempts === 1) throw new Error('spawn exploded')
+        return fakeRuntime(tenantId, failures)
+      },
+    })
+    cleanup.push(() => manager.shutdown())
+
+    await expect(manager.withTenant('a', async rt => rt.request('x', {})))
+      .rejects.toThrow('spawn exploded')
+    // The failed spawn left no live entry; the next attempt spawns fresh.
+    await manager.withTenant('a', async rt => rt.request('x', {}))
+    expect(attempts).toBe(2)
+    expect(manager.stats().live).toBe(1)
+  })
+
+  it('rejects a queued acquire when the manager shuts down', async () => {
+    const manager = new TenantRuntimeManager({
+      createRuntime: async tenantId => sleeperRuntime(tenantId, [], 10_000),
+      maxConcurrent: 1,
+    })
+    cleanup.push(() => manager.shutdown())
+
+    const first = manager.withTenant('a', async rt => rt.request('x', {}))
+    const secondExpectation = expect(manager.withTenant('b', async () => 1))
+      .rejects.toThrow(/shut down/)
+    await manager.shutdown()
+    await secondExpectation
+    // The shutdown above ran twice (cleanup holds another call); both idempotent.
+    await first.catch(() => {})
+  })
+
+  it('eagerly evicts an idle entry when a new tenant enqueues against a full table', async () => {
+    const log: string[] = []
+    const manager = new TenantRuntimeManager({
+      createRuntime: async tenantId => fakeRuntime(tenantId, log),
+      maxConcurrent: 1,
+      idleTimeoutMs: 60_000,
+      queueTimeoutMs: 1_000,
+    })
+    cleanup.push(() => manager.shutdown())
+
+    // 'a' finished its work: live but idle, holding the only slot.
+    await manager.withTenant('a', async rt => rt.request('x', {}))
+    expect(manager.stats().live).toBe(1)
+
+    // A new tenant enqueues; without enqueue-driven eviction this would
+    // queue-timeout long before the 60s idle window elapses.
+    await manager.withTenant('b', async rt => rt.request('x', {}))
+    expect(manager.stats().liveTenants).toEqual(['b'])
+    expect(log.some(entry => entry.startsWith('dispose:a'))).toBe(true)
+  })
+
+  it('drops a runtime from the table once it exits, so reacquire spawns fresh', async () => {
+    let created = 0
+    let exitFirst: (() => void) | undefined
+    const manager = new TenantRuntimeManager({
+      createRuntime: async (tenantId) => {
+        created += 1
+        const exited = new Promise<void>((resolve) => { exitFirst = resolve })
+        return {
+          ...fakeRuntime(tenantId, []),
+          exited: () => exited,
+        }
+      },
+      idleTimeoutMs: 60_000,
+    })
+    cleanup.push(() => manager.shutdown())
+
+    await manager.withTenant('a', async rt => rt.request('x', {}))
+    expect(created).toBe(1)
+    // The runtime dies while still live in the table.
+    exitFirst!()
+    await vi.waitFor(() => { expect(manager.stats().live).toBe(0) })
+
+    await manager.withTenant('a', async rt => rt.request('x', {}))
+    expect(created).toBe(2)
+  })
+
+  it('degrades a throwing permission answerer to cancelled', async () => {
+    const hub = new AcpEventHub()
+    hub.onPermission(async () => { throw new Error('BFF exploded') })
+    await expect(hub.answerPermission({ options: [] })).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
   })
 
   it('shutdown drains everything and rejects later acquires', async () => {

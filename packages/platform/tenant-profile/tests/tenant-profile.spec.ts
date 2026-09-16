@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -117,6 +117,18 @@ describe('provisionTenantHome', () => {
 
     provisionTenantHome({ homeDir, workspaceDir, dshVersion: '1.2.3', force: true })
     expect(readManifest(homeDir).workspaceDir).toBe(workspaceDir)
+  })
+
+  it('reports an unreadable manifest distinctly from invalid JSON', () => {
+    const { homeDir, workspaceDir } = freshRoot()
+    provisionTenantHome({ homeDir, workspaceDir, dshVersion: '1.2.3' })
+    // A directory at the manifest path is a deterministic EISDIR on every
+    // platform, unlike a permission-bit trick.
+    rmSync(join(homeDir, TENANT_MANIFEST_FILENAME))
+    mkdirSync(join(homeDir, TENANT_MANIFEST_FILENAME))
+
+    expect(() => provisionTenantHome({ homeDir, workspaceDir, dshVersion: '1.2.3' }))
+      .toThrow(/unreadable \(EISDIR.*pass force to overwrite/s)
   })
 
   it('rejects invalid profile names', () => {

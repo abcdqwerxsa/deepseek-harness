@@ -62,6 +62,7 @@ interface LiveEntry {
 interface SlotWaiter {
   readonly tenantId: string
   resolve: () => void
+  reject: (error: Error) => void
   timer: NodeJS.Timeout
 }
 
@@ -126,6 +127,7 @@ export class TenantRuntimeManager {
     this.shutDown = true
     for (const waiter of this.waiters.splice(0)) {
       clearTimeout(waiter.timer)
+      waiter.reject(new Error('orchestrator: manager is shut down'))
     }
     const entries = [...this.entries.values()]
     this.entries.clear()
@@ -167,6 +169,10 @@ export class TenantRuntimeManager {
         throw new Error('orchestrator: manager is shut down')
       }
       this.entries.set(tenantId, entry)
+      void runtime.exited().then(() => {
+        if (this.entries.get(tenantId) === entry) this.entries.delete(tenantId)
+        this.drainWaiters()
+      })
       slot.resolve(entry)
       return attachExisting(entry)
     } catch (error) {
@@ -186,6 +192,10 @@ export class TenantRuntimeManager {
       resolve = res
       reject = rej
     })
+    // The creator never awaits slot.promise; without this no-op handler a
+    // spawn failure with no same-tenant joiner would crash the host process
+    // as an unhandled rejection. Joiners still observe the rejection.
+    promise.catch(() => {})
     const slot: SpawnSlot = { promise, resolve, reject }
     this.spinning.set(tenantId, slot)
     return slot
@@ -235,6 +245,10 @@ export class TenantRuntimeManager {
           clearTimeout(waiter.timer)
           resolve()
         },
+        reject: (error: Error) => {
+          clearTimeout(waiter.timer)
+          reject(error)
+        },
         timer: undefined as unknown as NodeJS.Timeout,
       }
       waiter.timer = setTimeout(() => {
@@ -244,6 +258,10 @@ export class TenantRuntimeManager {
       }, this.options.queueTimeoutMs)
       waiter.timer.unref()
       this.waiters.push(waiter)
+      // Enqueue must itself trigger eager eviction: a full table of idle
+      // entries would otherwise fake a queue timeout until the idle window
+      // (default 5 min) elapses.
+      this.drainWaiters()
     })
   }
 
@@ -306,7 +324,13 @@ export class AcpEventHub extends EventEmitter {
 
   async answerPermission(request: unknown): Promise<unknown> {
     if (this.permissionHandler === undefined) return { outcome: { outcome: 'cancelled' } }
-    return this.permissionHandler(request)
+    try {
+      return await this.permissionHandler(request)
+    } catch {
+      // A failing answerer must degrade to fail-closed, never close the
+      // tenant connection over a permission prompt.
+      return { outcome: { outcome: 'cancelled' } }
+    }
   }
 }
 

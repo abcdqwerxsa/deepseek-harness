@@ -30,18 +30,20 @@ export interface StdioRuntimeSpec {
  * `initialize` handshake; rejects if the child dies or the handshake fails.
  */
 export async function spawnAcpStdioRuntime(tenantId: string, spec: StdioRuntimeSpec): Promise<TenantRuntime> {
+  // buffer:false keeps execa from collecting the child's whole stdout in
+  // memory (and from killing the child at its default 100 MB maxBuffer on a
+  // long-lived streaming runtime); this adapter owns stdout reading itself.
   const child = execa(spec.command, [...spec.args], {
     cwd: spec.cwd,
     reject: false,
     killSignal: 'SIGKILL',
+    buffer: false,
     env: { ...spec.env },
     extendEnv: false,
   })
   const hub = new AcpEventHub()
-  const rawOut: string[] = []
   const passthrough = new Readable({ read() {} })
   child.stdout.on('data', (chunk: Buffer) => {
-    rawOut.push(chunk.toString('utf8'))
     passthrough.push(chunk)
   })
   child.stdout.on('end', () => { passthrough.push(null) })
