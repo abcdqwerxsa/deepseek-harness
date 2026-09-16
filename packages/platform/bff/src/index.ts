@@ -238,12 +238,14 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
         ws.on('error', () => { ws.terminate() })
         const entry = socketsOf(principal.tenantId)
         entry.sockets.add(ws)
+        // Registered before the replay loop so a socket that dies mid-replay
+        // cannot linger in the tenant set.
+        ws.on('close', () => { entry.sockets.delete(ws) })
         // A tenant's only viewer may have reconnected (page refresh): replay
         // pending permission requests instead of timing them out silently.
         for (const [id, pending] of entry.pending) {
           ws.send(JSON.stringify({ type: 'permission-request', id, request: pending.request }))
         }
-        ws.on('close', () => { entry.sockets.delete(ws) })
         ws.on('message', (data) => {
           let message: unknown
           try {
@@ -257,7 +259,8 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
           }
         })
       })
-    } catch {
+    } catch (error) {
+      console.error('[platform-bff] upgrade failed:', error)
       socket.destroy()
     }
   })
