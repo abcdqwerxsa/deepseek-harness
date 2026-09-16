@@ -46,7 +46,7 @@ export interface PlatformServer {
 
 interface TenantSockets {
   readonly sockets: Set<WebSocket>
-  readonly pending: Map<string, { resolve: (response: unknown) => void; timer: NodeJS.Timeout }>
+  readonly pending: Map<string, { request: unknown; resolve: (response: unknown) => void; timer: NodeJS.Timeout }>
 }
 
 export async function startPlatformServer(options: PlatformServerOptions): Promise<PlatformServer> {
@@ -84,6 +84,7 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
       }, permissionTimeoutMs)
       timer.unref()
       entry.pending.set(id, {
+        request,
         resolve: (response) => {
           clearTimeout(timer)
           entry.pending.delete(id)
@@ -188,7 +189,14 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
 
   const server = createServer((request, response) => {
     void handle(request, response).catch((error: unknown) => {
-      json(response, 500, { error: error instanceof Error ? error.message : String(error) })
+      if (error instanceof InvalidJsonBodyError) {
+        json(response, 400, { error: 'invalid json' })
+        return
+      }
+      // Generic outward message: internal errors can carry paths and spawn
+      // diagnostics that no tenant should see.
+      console.error('[platform-bff] request failed:', error)
+      json(response, 500, { error: 'internal error' })
     })
   })
 
@@ -209,35 +217,49 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
 
   const wss = new WebSocketServer({ noServer: true })
   server.on('upgrade', (request, socket, head) => {
-    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
-    if (url.pathname !== '/ws') {
-      socket.destroy()
-      return
-    }
-    const token = url.searchParams.get('token')
-    const principal = token === null ? undefined : options.authenticator.authenticateToken(token)
-    if (principal === undefined) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
-      socket.destroy()
-      return
-    }
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      const entry = socketsOf(principal.tenantId)
-      entry.sockets.add(ws)
-      ws.on('close', () => { entry.sockets.delete(ws) })
-      ws.on('message', (data) => {
-        let message: unknown
-        try {
-          message = JSON.parse(messageText(data))
-        } catch {
-          return
+    // Synchronous event callback: an unguarded throw (a hostile Host header
+    // fails URL parsing before any auth) would crash the whole process.
+    try {
+      const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
+      if (url.pathname !== '/ws') {
+        socket.destroy()
+        return
+      }
+      const token = url.searchParams.get('token')
+      const principal = token === null ? undefined : options.authenticator.authenticateToken(token)
+      if (principal === undefined) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
+        socket.destroy()
+        return
+      }
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        // ws emits 'error' on protocol violations and failed sends; an
+        // unhandled 'error' would crash the process, so terminate instead.
+        ws.on('error', () => { ws.terminate() })
+        const entry = socketsOf(principal.tenantId)
+        entry.sockets.add(ws)
+        // A tenant's only viewer may have reconnected (page refresh): replay
+        // pending permission requests instead of timing them out silently.
+        for (const [id, pending] of entry.pending) {
+          ws.send(JSON.stringify({ type: 'permission-request', id, request: pending.request }))
         }
-        const record = message as { type?: string; id?: string; response?: unknown }
-        if (record.type === 'permission-response' && typeof record.id === 'string') {
-          entry.pending.get(record.id)?.resolve(record.response)
-        }
+        ws.on('close', () => { entry.sockets.delete(ws) })
+        ws.on('message', (data) => {
+          let message: unknown
+          try {
+            message = JSON.parse(messageText(data))
+          } catch {
+            return
+          }
+          const record = message as { type?: string; id?: string; response?: unknown }
+          if (record.type === 'permission-response' && typeof record.id === 'string') {
+            entry.pending.get(record.id)?.resolve(validPermissionResponse(record.response))
+          }
+        })
       })
-    })
+    } catch {
+      socket.destroy()
+    }
   })
 
   await new Promise<void>((resolve, reject) => {
@@ -272,9 +294,27 @@ export function messageText(data: unknown): string {
   throw new Error(`platform-bff: unsupported websocket message payload ${typeof data}`)
 }
 
+class InvalidJsonBodyError extends Error {}
+
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = []
   for await (const chunk of request) chunks.push(chunk as Buffer)
   if (chunks.length === 0) return {}
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  } catch (error) {
+    throw new InvalidJsonBodyError('request body is not valid JSON', { cause: error })
+  }
+}
+
+/** A tenant socket's permission answer, degraded to fail-closed when malformed. */
+function validPermissionResponse(response: unknown): unknown {
+  if (typeof response === 'object' && response !== null) {
+    const outcome = (response as { outcome?: unknown }).outcome
+    if (typeof outcome === 'object' && outcome !== null) {
+      const kind = (outcome as { outcome?: unknown }).outcome
+      if (kind === 'cancelled' || kind === 'selected') return response
+    }
+  }
+  return { outcome: { outcome: 'cancelled' } }
 }

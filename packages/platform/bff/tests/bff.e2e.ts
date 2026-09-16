@@ -118,11 +118,12 @@ describe('platform BFF over real spawned runtimes', () => {
 
     // Transcript persisted server-side and replayable.
     const transcript = await (await api(platform, TOKEN_A, `/api/session/${sessionId}/transcript`)).json() as { update: string }[]
-    expect(transcript.some(row => JSON.parse(row.update!).content?.text === 'BFF E2E OK')).toBe(true)
+    const parsed = transcript.map(row => JSON.parse(row.update) as { content?: { text?: string } })
+    expect(parsed.some(row => row.content?.text === 'BFF E2E OK')).toBe(true)
 
     // Cross-tenant isolation: beta sees nothing of alpha's session.
     expect(await api(platform, TOKEN_B, '/api/sessions')).toBeDefined()
-    const foreign = await (await api(platform, TOKEN_B, `/api/session/${sessionId}/transcript`)).json()
+    const foreign = await (await api(platform, TOKEN_B, `/api/session/${sessionId}/transcript`)).json() as unknown[]
     expect(foreign).toEqual([])
 
     expect((await api(platform, TOKEN_A, `/api/session/${sessionId}/close`, { method: 'POST' })).status).toBe(200)

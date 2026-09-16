@@ -1,4 +1,6 @@
 import { EventEmitter } from 'node:events'
+import { randomBytes } from 'node:crypto'
+import { connect as netConnect, type Socket as netSocket } from 'node:net'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import WebSocket from 'ws'
 import { devTokenAuthenticator } from '../src/auth.ts'
@@ -28,7 +30,12 @@ function fakeRuntimeFactory(hub: FakeRuntimeHub): (tenantId: string) => Promise<
       request: async <T>(method: string, params: unknown): Promise<T> => {
         hub.requests.push(method)
         if (method === 'session/new') return { sessionId: 'sess-1' } as T
-        if (method === 'session/prompt') return { stopReason: 'end_turn' } as T
+        if (method === 'session/prompt') {
+          if ((params as { sessionId?: string }).sessionId === 'boom') {
+            throw new Error('spawn /tmp/dsh-tenant-xyz failed: diagnostic detail')
+          }
+          return { stopReason: 'end_turn' } as T
+        }
         if (method === 'session/close') return {} as T
         if (method === 'session/list') return { sessions: [{ sessionId: 'sess-1', cwd: `/ws/${tenantId}` }] } as T
         if (method === 'session/resume') return {} as T
@@ -171,6 +178,114 @@ describe('platform BFF', () => {
     const received = await requestMessage
     expect(received.type).toBe('permission-request')
     socket.send(JSON.stringify({ type: 'permission-response', id: received.id, response: { outcome: { outcome: 'selected', optionId: 'allow-once' } } }))
+    await expect(answer).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow-once' } })
+  })
+
+  it('returns 400 for invalid JSON and hides internal error details on 500', async () => {
+    const hub = new FakeRuntimeHub()
+    const server = await startServer(hub)
+
+    const badJson = await api(server, TOKEN_A, '/api/session/new', { method: 'POST', body: '{not json' })
+    expect(badJson.status).toBe(400)
+    expect(await badJson.json()).toEqual({ error: 'invalid json' })
+
+    // The fake runtime throws a diagnostic-heavy error; the 500 body must be generic.
+    const failed = await api(server, TOKEN_A, '/api/session/boom/prompt', {
+      method: 'POST',
+      body: JSON.stringify({ text: 'x' }),
+    })
+    expect(failed.status).toBe(500)
+    expect(await failed.json()).toEqual({ error: 'internal error' })
+  })
+
+  it('survives a hostile Host header on upgrade without authentication', async () => {
+    const server = await startServer(new FakeRuntimeHub())
+    const garbage = new Promise<void>((resolve) => {
+      const socket = netConnect({ port: server.port, host: '127.0.0.1' }, () => {
+        socket.write('GET /ws?token=anything HTTP/1.1\r\nHost: a b\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n')
+        resolve()
+      })
+      socket.on('error', () => { resolve() })
+      cleanupFns.push(() => { socket.destroy() })
+    })
+    await garbage
+    // The server process is still serving authenticated traffic.
+    expect((await api(server, TOKEN_A, '/api/sessions')).status).toBe(200)
+  })
+
+  it('survives a protocol-violating websocket frame from a tenant', async () => {
+    const hub = new FakeRuntimeHub()
+    const server = await startServer(hub)
+    await api(server, TOKEN_A, '/api/session/new', { method: 'POST', body: JSON.stringify({ cwd: '/ws/alpha' }) })
+
+    const connected = new Promise<netSocket>((resolve) => {
+      const socket = netConnect({ port: server.port, host: '127.0.0.1' }, () => {
+        const key = randomBytes(16).toString('base64')
+        socket.write(
+          'GET /ws?token=' + TOKEN_A + ' HTTP/1.1\r\n'
+          + 'Host: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n'
+          + 'Sec-WebSocket-Key: ' + key + '\r\nSec-WebSocket-Version: 13\r\n\r\n',
+        )
+        socket.once('data', () => { resolve(socket) })
+      })
+      socket.on('error', () => {})
+      cleanupFns.push(() => { socket.destroy() })
+    })
+    const raw = await connected
+    // Unmasked text frame from the client: a protocol violation the receiver
+    // raises as a socket 'error'.
+    raw.write(Buffer.from([0x81, 0x01, 0x41]))
+    await new Promise((resolve) => { setTimeout(resolve, 150) })
+    expect((await api(server, TOKEN_A, '/api/sessions')).status).toBe(200)
+  })
+
+  it('degrades a malformed permission answer to cancelled', async () => {
+    const hub = new FakeRuntimeHub()
+    const server = await startServer(hub)
+    await api(server, TOKEN_A, '/api/session/new', { method: 'POST', body: JSON.stringify({ cwd: '/ws/alpha' }) })
+
+    const socket = new WebSocket(`ws://127.0.0.1:${server.port}/ws?token=${TOKEN_A}`)
+    sockets.push(socket)
+    await new Promise<void>((resolve) => { socket.on('open', resolve) })
+    const requestMessage = new Promise<{ type: string; id: string }>((resolve) => {
+      socket.on('message', (data) => {
+        resolve(JSON.parse(messageText(data)) as { type: string; id: string })
+      })
+    })
+
+    const answer = hub.permissionHandler!({ options: [] })
+    const received = await requestMessage
+    socket.send(JSON.stringify({ type: 'permission-response', id: received.id, response: 5 }))
+    await expect(answer).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+  })
+
+  it('replays a pending permission request to a reconnecting tenant socket', async () => {
+    const hub = new FakeRuntimeHub()
+    const server = await startServer(hub, { permissionTimeoutMs: 5_000 })
+    await api(server, TOKEN_A, '/api/session/new', { method: 'POST', body: JSON.stringify({ cwd: '/ws/alpha' }) })
+
+    const first = new WebSocket(`ws://127.0.0.1:${server.port}/ws?token=${TOKEN_A}`)
+    sockets.push(first)
+    await new Promise<void>((resolve) => { first.on('open', resolve) })
+    const firstMessage = new Promise<{ type: string; id: string }>((resolve) => {
+      first.on('message', (data) => {
+        resolve(JSON.parse(messageText(data)) as { type: string; id: string })
+      })
+    })
+    const answer = hub.permissionHandler!({ options: [{ optionId: 'allow-once' }] })
+    const pending = await firstMessage
+    expect(pending.type).toBe('permission-request')
+    first.close()
+
+    const second = new WebSocket(`ws://127.0.0.1:${server.port}/ws?token=${TOKEN_A}`)
+    sockets.push(second)
+    const replay = await new Promise<{ type: string; id: string }>((resolve) => {
+      second.on('message', (data) => {
+        resolve(JSON.parse(messageText(data)) as { type: string; id: string })
+      })
+    })
+    expect(replay.type).toBe('permission-request')
+    second.send(JSON.stringify({ type: 'permission-response', id: replay.id, response: { outcome: { outcome: 'selected', optionId: 'allow-once' } } }))
     await expect(answer).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow-once' } })
   })
 
