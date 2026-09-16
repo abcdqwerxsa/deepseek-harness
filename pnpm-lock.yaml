@@ -8200,6 +8200,25 @@ importers:
         specifier: workspace:^
         version: link:../../interaction/user-questions
 
+  packages/platform/bff:
+    dependencies:
+      '@deepseek-ai/dsh-orchestrator':
+        specifier: workspace:^
+        version: link:../orchestrator
+      '@deepseek-ai/dsh-tenant-profile':
+        specifier: workspace:^
+        version: link:../tenant-profile
+      ws:
+        specifier: ^8.21.0
+        version: 8.21.0
+    devDependencies:
+      '@deepseek-ai/dsh-llm-mock-server':
+        specifier: workspace:^
+        version: link:../../test-support/llm-mock-server
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
+
   packages/platform/orchestrator:
     dependencies:
       '@agentclientprotocol/sdk':

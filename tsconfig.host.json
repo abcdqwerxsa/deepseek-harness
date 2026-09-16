@@ -383,6 +383,7 @@
     { "path": "./packages/lsp/tool-lsp" },
     { "path": "./packages/platform/tenant-profile" },
     { "path": "./packages/platform/orchestrator" },
+    { "path": "./packages/platform/bff" },
     { "path": "./apps/cli" },
     { "path": "./apps/desktop-host" },
     { "path": "./apps/desktop" }
