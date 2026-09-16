@@ -177,8 +177,18 @@ describe('TenantRuntimeManager', () => {
     })
     cleanup.push(() => manager.shutdown())
 
-    await expect(manager.withTenant('a', async rt => rt.request('x', {})))
+    // Creator and same-tenant joiner both observe the failure; emptySlot's
+    // no-op catch must mark the promise handled without swallowing the
+    // joiner's rejection. Handlers attach before any await so the rejection
+    // is never momentarily unhandled.
+    const creatorAttempt = expect(manager.withTenant('a', async rt => rt.request('x', {})))
       .rejects.toThrow('spawn exploded')
+    const joinerAttempt = expect(manager.withTenant('a', async rt => rt.request('x', {})))
+      .rejects.toThrow('spawn exploded')
+    await creatorAttempt
+    await joinerAttempt
+    expect(attempts).toBe(1)
+
     // The failed spawn left no live entry; the next attempt spawns fresh.
     await manager.withTenant('a', async rt => rt.request('x', {}))
     expect(attempts).toBe(2)
@@ -187,7 +197,7 @@ describe('TenantRuntimeManager', () => {
 
   it('rejects a queued acquire when the manager shuts down', async () => {
     const manager = new TenantRuntimeManager({
-      createRuntime: async tenantId => sleeperRuntime(tenantId, [], 10_000),
+      createRuntime: async tenantId => sleeperRuntime(tenantId, [], 100),
       maxConcurrent: 1,
     })
     cleanup.push(() => manager.shutdown())
