@@ -21,7 +21,7 @@ kind: "package-library"
 
 ## 零构建门户
 
-`startPlatformServer` 同时在 `/` 与 `/portal.js` 服务租户门户：一个刻意无工具链的页面（`portal/`），含 token 连接、会话列表、按 workspace 路径新建会话、由 transcript 接口 + 实时 WebSocket 更新驱动的聊天视图，以及可点击的审批卡。把同样两个文件放到任意静态源即可复用；其消费的 API 面就是稳定契约。
+`startPlatformServer` 同时在 `/` 与 `/portal.js` 服务租户门户：一个刻意无工具链的页面（`portal/`），含 token 连接、会话列表、按 workspace 路径新建会话、由 transcript 接口 + 实时 WebSocket 更新驱动的聊天视图，以及可点击的审批卡。把它放在同源，或放在会代理 `/api` 与 `/ws` 的网关之后；其消费的面就是稳定契约。
 
 每个 spawn 出的运行时由 BFF 包装一次：其更新流同时喂 transcript 表与该租户的 socket，其审批应答者带超时地路由到该租户的活跃 socket。服务刻意零框架（`node:http`、`ws`、`node:sqlite`）且单进程；跨主机扩展是同一接口之后的未来工作。
 

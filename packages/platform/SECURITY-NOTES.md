@@ -1,0 +1,55 @@
+# Platform Security Notes (internal)
+
+Internal security review record for the multi-tenant platform packages
+(`packages/platform/*`). Status: **internal-network v1**; see the gaps list
+before any wider deployment.
+
+## Reviewed surface and how
+
+Three adversarial review rounds (read-only reviewer agents, run ids
+61c8f9f9 / 79ef4ab4 / 1e901aeb / 84073593 / eff28921 / fdcd9de2 lineage)
+plus per-package tests:
+
+| Round | Package | Outcome |
+|---|---|---|
+| 1 | tenant-profile | P1 (manifest recovery) fixed and re-verified |
+| 2 | orchestrator | BLOCK (P0 spawn-failure crash, P1 shutdown orphans / queue starvation / unbounded stdout) — all fixed and re-verified |
+| 3 | bff | P1 unauthenticated Host-header crash + P1 websocket frame crash — fixed and re-verified; P2 hardening (400/json, generic 500, permission shape whitelist, pending replay) landed |
+
+Trust-boundary tests lock the regressions: hostile Host header, unmasked
+websocket frame, invalid JSON, malformed permission answers, version-drift
+manifests, spawn-failure double-acquirer.
+
+## Enforced properties
+
+- Tenant isolation: every API/WS path derives `tenantId` from the server-side
+  token map; transcript and audit queries are tenant-scoped SQL parameters.
+- Fail-closed permissions: no socket, malformed answer, or answerer throw all
+  resolve `cancelled`; the ACP server additionally rejects unknown options.
+- Telemetry: both contributors unmounted at the profile layer (patch rows
+  disabled), so no session record leaves the tenant runtime by construction.
+- Model keys: platform-held, injected at spawn time through the environment,
+  never written into the tenant home.
+
+## Known gaps (pre-deployment requirements)
+
+1. **Per-child OS isolation is not wired.** The spawn spec accepts any
+   `command`, so deploy a `bwrap`/userns wrapper in `composeTenantRuntimeFactory`
+   before tenants are not mutually trusted; same-UID `/proc` reads are the
+   concrete risk (keys ride in child env).
+2. **OIDC is an interface, not an implementation.** Dev tokens are static and
+   long-lived; rotate them and front the BFF with the internal TLS gateway.
+3. No CORS/rate-limit/body-size caps — the gateway in front owns these.
+4. `session/list` spawns a runtime on demand (cold-start cost, not a security
+   issue); a direct persistence reader would remove it.
+5. Spawned-process `request_permission` e2e pending (mock-server per-call
+   tool arguments); forwarding logic is otherwise test-locked end to end.
+6. Multi-host scale-out is unimplemented (single-process manager by design).
+
+## Operational notes
+
+- Version lock: `tenant.json` pins each home to the provisioning dsh version;
+  platform upgrades re-provision with `force` deliberately.
+- Audit: `audit` table (SQLite); auth failures under `unknown`.
+- Backup the SQLite file; transcript is the only replay source after
+  `session/resume` (ACP does not replay history).

@@ -37,6 +37,8 @@
     statusLabel.textContent = text
   }
 
+  // ponytail: full rebuild per update — O(n²) on a long streamed turn and a
+  // RangeError past ~65k turns from the spread; fine for a v1 internal portal.
   function renderTurns() {
     logView.replaceChildren(...state.turns.map((turn) => {
       const node = document.createElement('div')
@@ -52,6 +54,10 @@
               id: turn.id,
               response: { outcome: { outcome: 'selected', optionId: option } },
             }))
+            // Drop it from state too: renderTurns rebuilds from state.turns,
+            // so a DOM-only removal would resurrect the card on the next update.
+            const index = state.turns.indexOf(turn)
+            if (index >= 0) state.turns.splice(index, 1)
             node.remove()
           })
           node.appendChild(button)
@@ -87,7 +93,8 @@
 
   function connectSocket() {
     state.socket?.close()
-    const socket = new WebSocket(`ws://${location.host}/ws?token=${encodeURIComponent(state.token)}`)
+    const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const socket = new WebSocket(`${scheme}//${location.host}/ws?token=${encodeURIComponent(state.token)}`)
     state.socket = socket
     socket.addEventListener('message', (event) => {
       const message = JSON.parse(event.data)
@@ -114,10 +121,13 @@
       item.textContent = session.sessionId
       item.setAttribute('data-session-id', session.sessionId)
       if (session.sessionId === state.sessionId) item.setAttribute('aria-current', 'true')
-      item.addEventListener('click', async () => {
+      item.addEventListener('click', () => {
         state.sessionId = session.sessionId
-        await loadTranscript(session.sessionId)
-        composer.hidden = false
+        loadTranscript(session.sessionId).then(() => {
+          composer.hidden = false
+        }, (error) => {
+          status(error instanceof Error ? error.message : String(error))
+        })
         refreshSessions().catch(() => {})
       })
       return item

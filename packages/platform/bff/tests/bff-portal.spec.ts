@@ -128,6 +128,13 @@ describe('tenant portal page', () => {
     }
     doc.querySelector<HTMLButtonElement>('.permission button')!.click()
     await expect(answer).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow-once' } })
+
+    // The answered card must not resurrect when the next update re-renders.
+    hub.emitUpdate('sess-portal', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ' after' } })
+    await vi.waitFor(() => {
+      expect([...doc.querySelectorAll('.msg')].map(node => node.textContent)).toContain('PORTAL REPLY after')
+    })
+    expect(doc.querySelector('.permission')).toBeNull()
   }, 20_000)
 
   it('keeps a second viewer blind to a tenant that never shared its token', async () => {

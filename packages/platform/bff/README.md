@@ -21,7 +21,7 @@ Use `@deepseek-ai/dsh-platform-bff` as the serving layer between the tenant port
 
 ## The build-free portal
 
-`startPlatformServer` also serves the tenant portal at `/` and `/portal.js`: a deliberate no-toolchain page (`portal/`) with token connect, session list, new-session by workspace path, a chat view fed by the transcript endpoint plus live WebSocket updates, and clickable permission cards. Drive it from any static origin by hosting the same two files; the API surfaces it consumes are the stable contract.
+`startPlatformServer` also serves the tenant portal at `/` and `/portal.js`: a deliberate no-toolchain page (`portal/`) with token connect, session list, new-session by workspace path, a chat view fed by the transcript endpoint plus live WebSocket updates, and clickable permission cards. Host it on the same origin, or behind a gateway that proxies `/api` and `/ws`; the surfaces it consumes are the stable contract.
 
 Every spawned runtime is wrapped once by the BFF: its update stream feeds both the transcript table and the tenant's sockets, and its permission answerer routes to the tenant's live sockets with a per-request timeout. The service is intentionally framework-free (`node:http`, `ws`, `node:sqlite`) and single-process; scale-out across hosts is future work behind the same interface.
 

@@ -4,7 +4,8 @@ import { connect as netConnect, type Socket as netSocket } from 'node:net'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import WebSocket from 'ws'
 import { devTokenAuthenticator } from '../src/auth.ts'
-import { messageText, startPlatformServer, type PlatformServer } from '../src/index.ts'
+import { startPlatformServer } from '../src/index.ts'
+import { messageText, type PlatformServer } from '../src/index.ts'
 import type { TenantRuntime } from '@deepseek-ai/dsh-orchestrator'
 
 /**
@@ -287,6 +288,58 @@ describe('platform BFF', () => {
     expect(replay.type).toBe('permission-request')
     second.send(JSON.stringify({ type: 'permission-response', id: replay.id, response: { outcome: { outcome: 'selected', optionId: 'allow-once' } } }))
     await expect(answer).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow-once' } })
+  })
+
+  it('aggregates usage from the update stream and keeps an audit trail', async () => {
+    const hub = new FakeRuntimeHub()
+    const server = await startPlatformServer({
+      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha'], [TOKEN_B, 'beta']])),
+      createRuntime: async tenantId => ({
+        tenantId,
+        request: async <T>(method: string): Promise<T> => {
+          if (method === 'session/new') return { sessionId: 'sess-usage' } as T
+          if (method === 'session/prompt') {
+            hub.emitUpdate('sess-usage', { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'go' } })
+            hub.emitUpdate('sess-usage', { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'bash', kind: 'execute' })
+            hub.emitUpdate('sess-usage', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' } })
+            hub.emitUpdate('sess-usage', { sessionUpdate: 'usage_update', used: 1234, size: 128000 })
+            return { stopReason: 'end_turn' } as T
+          }
+          if (method === 'session/close') return {} as T
+          throw new Error(`usage fake: unsupported ${method}`)
+        },
+        onUpdate: (listener) => {
+          hub.updateListener = listener
+          return () => { hub.updateListener = undefined }
+        },
+        onPermission: () => {},
+        get lastUsedAt(): number {
+          return Date.now()
+        },
+        dispose: async () => {},
+        exited: () => new Promise<void>(() => {}),
+      }),
+    })
+
+    await api(server, TOKEN_A, '/api/session/new', { method: 'POST', body: JSON.stringify({ cwd: '/ws/alpha' }) })
+    await api(server, TOKEN_A, '/api/session/sess-usage/prompt', { method: 'POST', body: JSON.stringify({ text: 'go' }) })
+
+    const usage = await (await api(server, TOKEN_A, '/api/usage')).json() as {
+      totals: { sessions: number; turns: number; messages: number; toolCalls: number }
+      sessions: { sessionId: string; contextUsed: number | null; contextSize: number | null }[]
+    }
+    expect(usage.totals).toEqual({ sessions: 1, turns: 1, messages: 1, toolCalls: 1 })
+    expect(usage.sessions[0]).toMatchObject({ sessionId: 'sess-usage', contextUsed: 1234, contextSize: 128000 })
+
+    const audit = await (await api(server, TOKEN_A, '/api/audit')).json() as { event: string; detail: string | null }[]
+    const events = audit.map(entry => entry.event)
+    expect(events).toContain('session-new')
+    expect(events).toContain('session-prompt')
+
+    // Auth failures land in the 'unknown' bucket, not the tenant's trail.
+    await fetch(`http://127.0.0.1:${server.port}/api/sessions`)
+    const tenantAudit = await (await api(server, TOKEN_A, '/api/audit')).json() as { event: string }[]
+    expect(tenantAudit.map(entry => entry.event)).not.toContain('auth-failed')
   })
 
   it('fails closed when no tenant socket is connected', async () => {

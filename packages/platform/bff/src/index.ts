@@ -13,6 +13,8 @@ import {
 import { bearerOf, type Authenticator } from './auth.ts'
 import { TranscriptStore } from './transcript.ts'
 
+export { composeTenantRuntimeFactory, type ComposeTenantRuntimeOptions } from './compose.ts'
+
 /**
  * Thin BFF for the multi-tenant platform: bearer-token tenant auth, ACP REST
  * passthrough through the orchestrator, WebSocket fan-out of session updates,
@@ -101,6 +103,7 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
         },
         timer,
       })
+      transcript.audit(tenantId, 'permission-request', id)
       broadcast(tenantId, { type: 'permission-request', id, request })
     })
   }
@@ -133,6 +136,14 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
       json(response, 404, { error: 'not found' })
       return
     }
+    if (method === 'GET' && segments.length === 2 && segments[1] === 'usage') {
+      json(response, 200, transcript.usage(tenantId))
+      return
+    }
+    if (method === 'GET' && segments.length === 2 && segments[1] === 'audit') {
+      json(response, 200, transcript.auditTrail(tenantId))
+      return
+    }
     if (method === 'GET' && segments.length === 2 && segments[1] === 'sessions') {
       const listed = await manager.withTenant(tenantId, runtime => runtime.request('session/list', {}))
       json(response, 200, listed)
@@ -149,6 +160,8 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
         cwd,
         mcpServers: [],
       }))
+      const sessionId = (result as { sessionId?: string }).sessionId ?? ''
+      transcript.audit(tenantId, 'session-new', `${sessionId} cwd=${cwd}`)
       json(response, 200, result)
       return
     }
@@ -165,11 +178,13 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
           sessionId,
           prompt: [{ type: 'text', text: body.text }],
         }))
+        transcript.audit(tenantId, 'session-prompt', `${sessionId} stop=${(result as { stopReason?: string }).stopReason ?? '?'}`)
         json(response, 200, result)
         return
       }
       if (method === 'POST' && action === 'close') {
         const result = await manager.withTenant(tenantId, runtime => runtime.request('session/close', { sessionId }))
+        transcript.audit(tenantId, 'session-close', sessionId)
         json(response, 200, result)
         return
       }
@@ -226,6 +241,7 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
     const token = bearerOf(request)
     const principal = token === undefined ? undefined : options.authenticator.authenticateToken(token)
     if (principal === undefined) {
+      transcript.audit('unknown', 'auth-failed', request.method === 'GET' ? url.pathname : `${request.method} ${url.pathname}`)
       json(response, 401, { error: 'unauthorized' })
       return
     }
@@ -276,7 +292,9 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
           }
           const record = message as { type?: string; id?: string; response?: unknown }
           if (record.type === 'permission-response' && typeof record.id === 'string') {
-            entry.pending.get(record.id)?.resolve(validPermissionResponse(record.response))
+            const pending = entry.pending.get(record.id)
+            if (pending !== undefined) transcript.audit(principal.tenantId, 'permission-answer', record.id)
+            pending?.resolve(validPermissionResponse(record.response))
           }
         })
       })
