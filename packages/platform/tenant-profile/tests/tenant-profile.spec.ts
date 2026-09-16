@@ -87,6 +87,38 @@ describe('provisionTenantHome', () => {
       .toThrow(/workspaceDir must be absolute/)
   })
 
+  it('rejects a corrupt manifest with a clear error and repairs it with force', () => {
+    const { homeDir, workspaceDir } = freshRoot()
+    provisionTenantHome({ homeDir, workspaceDir, dshVersion: '1.2.3' })
+    writeFileSync(join(homeDir, TENANT_MANIFEST_FILENAME), '{"schema": 1, "dshVer')
+
+    expect(() => provisionTenantHome({ homeDir, workspaceDir, dshVersion: '1.2.3' }))
+      .toThrow(/not valid JSON.*pass force to overwrite/s)
+
+    const repaired = provisionTenantHome({ homeDir, workspaceDir, dshVersion: '1.2.3', force: true })
+    expect(repaired.provisioned).toBe(true)
+    expect(readManifest(homeDir).dshVersion).toBe('1.2.3')
+  })
+
+  it('rejects a shape-invalid manifest without a bare TypeError and repairs it with force', () => {
+    const { homeDir, workspaceDir } = freshRoot()
+    provisionTenantHome({ homeDir, workspaceDir, dshVersion: '1.2.3' })
+    writeFileSync(join(homeDir, TENANT_MANIFEST_FILENAME), JSON.stringify({ schema: 1, workspaceDir: 5 }))
+
+    let failure: unknown
+    try {
+      provisionTenantHome({ homeDir, workspaceDir, dshVersion: '1.2.3' })
+    } catch (error) {
+      failure = error
+    }
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).message).toMatch(/not a tenant manifest object.*pass force to overwrite/s)
+    expect((failure as Error).message).not.toMatch(/TypeError|ERR_INVALID/)
+
+    provisionTenantHome({ homeDir, workspaceDir, dshVersion: '1.2.3', force: true })
+    expect(readManifest(homeDir).workspaceDir).toBe(workspaceDir)
+  })
+
   it('rejects invalid profile names', () => {
     const { homeDir, workspaceDir } = freshRoot()
     for (const name of ['', '..', 'a/b', 'node_modules']) {

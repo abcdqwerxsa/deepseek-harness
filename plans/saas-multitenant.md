@@ -48,8 +48,8 @@
 
 ## Steps
 
-- [ ] **M0 地基**：新分支 `feat/saas-platform`；`tenant-profile` 置备器（模板 + telemetry-off patch + 版本锁）；隔离 home 下 `dsh --profile acp --dump-config` 验证组合
-- [ ] **M1 单租户驱动验证**：`dsh-subagent-acp` 驱动隔离 ACP 进程，走通 new→prompt→updates→request_permission→close→list→resume；**冷启动预算测量**（目标 <5s，含 userns wrapper）；kill -9 后 resume 验证
+- [x] **M0 地基**：新分支 `feat/saas-platform`；`tenant-profile` 置备器（模板 + telemetry-off patch + 版本锁）；隔离 home 下 `dsh --profile acp --dump-config` 验证组合
+- [x] **M1 单租户驱动验证**：`tenant-acp.e2e.ts`（3/3 过）：工具往返、跨进程 session/list 持久化、SIGKILL 中断后 resume、暖 home 冷启动 <5s。**审批 e2e 延后至 M2**：审批仅在沙箱升级重试（两段异参）时触发，单 toolArguments mock 无法剧本化；M2 的 BFF 审批转发必须打通此链路，届时补
 - [ ] **M2 编排器 + BFF**：orchestrator（spawn/回收/队列/并发上限）+ acp-gateway + OIDC/dev 认证 + transcript 落库 + 审批 WS 转发
 - [ ] **M3 门户前端**：会话列表/chat/审批卡（ACP 更新流直渲染，ui-* 机会复用）；双租户隔离 E2E
 - [ ] **M4 收尾**：用量报表（session 事件聚合，替代计费）、审计日志、部署文档（内网单机→多机预留）、内部安全评审（SAFETY.md 要求；公网审计不适用内网但保留隔离要求）

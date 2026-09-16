@@ -118,22 +118,20 @@ export function provisionTenantHome(options: ProvisionTenantHomeOptions): Provis
 
   let provisioned = true
   if (existsSync(manifestPath)) {
-    let recorded: TenantManifest
-    try {
-      recorded = JSON.parse(readFileSync(manifestPath, 'utf8')) as TenantManifest
-    } catch (error) {
-      throw new Error(`tenant-profile: ${manifestPath} is not a readable tenant manifest`, { cause: error })
-    }
+    const recorded = readRecordedManifest(manifestPath)
     const conflicts: string[] = []
-    if (recorded.schema !== 1) conflicts.push(`schema ${JSON.stringify(recorded.schema)}`)
-    if (recorded.profileName !== profileName) {
-      conflicts.push(`profileName ${JSON.stringify(recorded.profileName)}`)
-    }
-    if (resolve(recorded.workspaceDir) !== resolvedWorkspace) {
-      conflicts.push(`workspaceDir ${JSON.stringify(recorded.workspaceDir)}`)
-    }
-    if (recorded.dshVersion !== dshVersion) {
-      conflicts.push(`dshVersion ${JSON.stringify(recorded.dshVersion)} (locked)`)
+    if (recorded.problem !== undefined) conflicts.push(recorded.problem)
+    if (recorded.manifest !== undefined) {
+      if (recorded.manifest.schema !== 1) conflicts.push(`schema ${JSON.stringify(recorded.manifest.schema)}`)
+      if (recorded.manifest.profileName !== profileName) {
+        conflicts.push(`profileName ${JSON.stringify(recorded.manifest.profileName)}`)
+      }
+      if (resolve(recorded.manifest.workspaceDir) !== resolvedWorkspace) {
+        conflicts.push(`workspaceDir ${JSON.stringify(recorded.manifest.workspaceDir)}`)
+      }
+      if (recorded.manifest.dshVersion !== dshVersion) {
+        conflicts.push(`dshVersion ${JSON.stringify(recorded.manifest.dshVersion)} (locked)`)
+      }
     }
     if (conflicts.length > 0) {
       if (!force) {
@@ -142,6 +140,8 @@ export function provisionTenantHome(options: ProvisionTenantHomeOptions): Provis
           + `${conflicts.join(', ')}); pass force to overwrite`,
         )
       }
+      // ponytail: truncate-then-write; a crash mid-write leaves a corrupt
+      // manifest, which readRecordedManifest routes back here for force repair.
       writeFileSync(
         manifestPath,
         manifestJson({ schema: 1, profileName, dshVersion, workspaceDir: resolvedWorkspace, createdAt: new Date().toISOString() }),
@@ -161,4 +161,36 @@ export function provisionTenantHome(options: ProvisionTenantHomeOptions): Provis
 
 function manifestJson(manifest: TenantManifest): string {
   return `${JSON.stringify(manifest, undefined, 2)}\n`
+}
+
+/**
+ * Parse a recorded manifest, reporting shape problems instead of throwing.
+ * A tenant runtime can write anything into its own home, so a corrupt or
+ * foreign `tenant.json` is provisioning input, not an exception: it folds
+ * into the conflicts path where `force` decides the outcome. `schema` stays
+ * `unknown` because the file is untrusted input the comparison must inspect.
+ */
+interface RecordedManifest {
+  readonly schema: unknown
+  readonly profileName: string
+  readonly dshVersion: string
+  readonly workspaceDir: string
+}
+
+function readRecordedManifest(path: string): { manifest?: RecordedManifest; problem?: string } {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf8'))
+  } catch (error) {
+    return { problem: `not valid JSON (${error instanceof Error ? error.message : String(error)})` }
+  }
+  if (
+    typeof parsed !== 'object' || parsed === null
+    || typeof (parsed as RecordedManifest).profileName !== 'string'
+    || typeof (parsed as RecordedManifest).dshVersion !== 'string'
+    || typeof (parsed as RecordedManifest).workspaceDir !== 'string'
+  ) {
+    return { problem: 'not a tenant manifest object (schema 1 string fields expected)' }
+  }
+  return { manifest: parsed as RecordedManifest }
 }
