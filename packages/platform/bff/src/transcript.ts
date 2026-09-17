@@ -52,6 +52,20 @@ export class TranscriptStore {
       )
     `)
     this.db.exec('CREATE INDEX IF NOT EXISTS audit_tenant_seq ON audit (tenant_id, seq)')
+    // The platform's own session registry. ACP session/list only reports
+    // sessions that are NOT open in the live runtime, so the portal's list
+    // must not depend on it: the registry tracks every session this platform
+    // created, live or not, with the cwd resume requires.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS sessions (
+        tenant_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        cwd TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        PRIMARY KEY (tenant_id, session_id)
+      )
+    `)
   }
 
   append(tenantId: string, sessionId: string, update: unknown): void {
@@ -73,6 +87,34 @@ export class TranscriptStore {
 
   close(): void {
     this.db.close()
+  }
+
+  /** Register or touch a session in the platform registry (cwd is resume currency). */
+  registerSession(tenantId: string, sessionId: string, cwd: string): void {
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO sessions (tenant_id, session_id, cwd, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (tenant_id, session_id) DO UPDATE SET last_seen_at = excluded.last_seen_at
+    `).run(tenantId, sessionId, cwd, now, now)
+  }
+
+  /** The registry's sessions for a tenant, most recently seen first. */
+  listSessions(tenantId: string): { sessionId: string; cwd: string; lastSeenAt: string }[] {
+    const rows = this.db.prepare(
+      'SELECT session_id, cwd, last_seen_at FROM sessions WHERE tenant_id = ? ORDER BY last_seen_at DESC',
+    ).all(tenantId)
+    return rows.map((row) => {
+      const record = row as { session_id: string; cwd: string; last_seen_at: string }
+      return { sessionId: record.session_id, cwd: record.cwd, lastSeenAt: record.last_seen_at }
+    })
+  }
+
+  /** The recorded cwd for one session, or undefined when unknown to the platform. */
+  sessionCwd(tenantId: string, sessionId: string): string | undefined {
+    const row = this.db.prepare(
+      'SELECT cwd FROM sessions WHERE tenant_id = ? AND session_id = ?',
+    ).get(tenantId, sessionId) as { cwd: string } | undefined
+    return row?.cwd
   }
 
   /** Append one audit event (auth failures, session lifecycle, permission answers). */

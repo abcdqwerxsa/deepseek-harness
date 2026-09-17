@@ -103,11 +103,12 @@ describe('tenant portal page', () => {
     tokenInput.value = TOKEN
     doc.getElementById('connect')!.click()
     await vi.waitFor(() => { expect(doc.getElementById('status')!.textContent).toBe('已连接') })
-    await vi.waitFor(() => { expect(doc.querySelector('[data-session-id="sess-portal"]')).not.toBeNull() })
 
     ;(doc.getElementById('cwd') as HTMLInputElement).value = '/ws/alpha'
     doc.getElementById('new-session')!.click()
     await vi.waitFor(() => { expect(doc.getElementById('composer')!.hidden).toBe(false) })
+    // The registry lists the fresh session immediately (live runtime included).
+    await vi.waitFor(() => { expect(doc.querySelector('[data-session-id="sess-portal"]')).not.toBeNull() })
 
     ;(doc.getElementById('prompt') as HTMLTextAreaElement).value = 'hello portal'
     doc.getElementById('composer')!.dispatchEvent(new dom.window.Event('submit', { cancelable: true }))

@@ -93,6 +93,93 @@ describe('platform BFF', () => {
     expect((await api(server, TOKEN_A, '/api/sessions')).status).toBe(200)
   })
 
+  it('lists a freshly created session immediately and auto-resumes on prompt', async () => {
+    const calls: string[] = []
+    const resumed: unknown[] = []
+    const server = await startPlatformServer({
+      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha'], [TOKEN_B, 'beta']])),
+      createRuntime: async tenantId => ({
+        tenantId,
+        request: async <T>(method: string, params: unknown): Promise<T> => {
+          calls.push(method)
+          if (method === 'session/new') return { sessionId: 'sess-live' } as T
+          if (method === 'session/resume') {
+            resumed.push(params)
+            return {} as T
+          }
+          if (method === 'session/prompt') return { stopReason: 'end_turn' } as T
+          if (method === 'session/close') return {} as T
+          if (method === 'session/list') return { sessions: [] } as T
+          throw new Error(`spec fake: ${method}`)
+        },
+        onUpdate: () => () => {},
+        onPermission: () => {},
+        get lastUsedAt(): number {
+          return Date.now()
+        },
+        dispose: async () => {},
+        exited: () => new Promise<void>(() => {}),
+      }),
+    })
+    cleanupFns.push(() => server.close())
+
+    await api(server, TOKEN_A, '/api/session/new', { method: 'POST', body: JSON.stringify({ cwd: '/ws/alpha' }) })
+    // The registry lists it right away, while the runtime is alive and the
+    // session is open (ACP session/list would exclude it).
+    const listed = await (await api(server, TOKEN_A, '/api/sessions')).json() as { sessions: { sessionId: string; cwd: string }[] }
+    expect(listed.sessions.map(entry => entry.sessionId)).toContain('sess-live')
+    expect(listed.sessions[0]!.cwd).toBe('/ws/alpha')
+
+    // Prompt re-opens the session first (runtime may have been reaped).
+    await api(server, TOKEN_A, '/api/session/sess-live/prompt', { method: 'POST', body: JSON.stringify({ text: 'hi' }) })
+    expect(resumed).toEqual([{ sessionId: 'sess-live', cwd: '/ws/alpha', mcpServers: [] }])
+    expect(calls.slice(0, 3)).toEqual(['session/new', 'session/resume', 'session/prompt'])
+  })
+
+  it('tolerates already-active on the auto-resume path and maps rate limits to 429', async () => {
+    let resumeCount = 0
+    let failOnce = true
+    const server = await startPlatformServer({
+      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha'], [TOKEN_B, 'beta']])),
+      createRuntime: async tenantId => ({
+        tenantId,
+        request: async <T>(method: string): Promise<T> => {
+          if (method === 'session/new') return { sessionId: 'sess-rl' } as T
+          if (method === 'session/resume') {
+            resumeCount += 1
+            throw new Error('session is already active: sess-rl')
+          }
+          if (method === 'session/prompt') {
+            if (failOnce) {
+              failOnce = false
+              throw new Error('Internal error: turn failed: inference exceeds tpm/rpm limit')
+            }
+            return { stopReason: 'end_turn' } as T
+          }
+          if (method === 'session/close') return {} as T
+          throw new Error(`spec fake: ${method}`)
+        },
+        onUpdate: () => () => {},
+        onPermission: () => {},
+        get lastUsedAt(): number {
+          return Date.now()
+        },
+        dispose: async () => {},
+        exited: () => new Promise<void>(() => {}),
+      }),
+    })
+    cleanupFns.push(() => server.close())
+    await api(server, TOKEN_A, '/api/session/new', { method: 'POST', body: JSON.stringify({ cwd: '/ws/alpha' }) })
+
+    const limited = await api(server, TOKEN_A, '/api/session/sess-rl/prompt', { method: 'POST', body: JSON.stringify({ text: 'hi' }) })
+    expect(limited.status).toBe(429)
+    expect(await limited.json()).toEqual({ error: 'model provider rate limited; retry in a minute' })
+
+    const recovered = await api(server, TOKEN_A, '/api/session/sess-rl/prompt', { method: 'POST', body: JSON.stringify({ text: 'hi' }) })
+    expect(recovered.status).toBe(200)
+    expect(resumeCount).toBe(2)
+  })
+
   it('drives the REST session flow and validates required fields', async () => {
     const hub = new FakeRuntimeHub()
     const server = await startServer(hub)
@@ -110,7 +197,7 @@ describe('platform BFF', () => {
     expect(await prompted.json()).toEqual({ stopReason: 'end_turn' })
 
     expect((await api(server, TOKEN_A, '/api/session/sess-1/close', { method: 'POST' })).status).toBe(200)
-    expect(hub.requests).toEqual(['session/new', 'session/prompt', 'session/close'])
+    expect(hub.requests).toEqual(['session/new', 'session/resume', 'session/prompt', 'session/close'])
   })
 
   it('persists observed updates as transcript and keeps tenants isolated', async () => {
@@ -305,7 +392,7 @@ describe('platform BFF', () => {
             hub.emitUpdate('sess-usage', { sessionUpdate: 'usage_update', used: 1234, size: 128000 })
             return { stopReason: 'end_turn' } as T
           }
-          if (method === 'session/close') return {} as T
+          if (method === 'session/close' || method === 'session/resume') return {} as T
           throw new Error(`usage fake: unsupported ${method}`)
         },
         onUpdate: (listener) => {

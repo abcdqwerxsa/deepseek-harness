@@ -147,8 +147,7 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
       return
     }
     if (method === 'GET' && segments.length === 2 && segments[1] === 'sessions') {
-      const listed = await manager.withTenant(tenantId, runtime => runtime.request('session/list', {}))
-      json(response, 200, listed)
+      json(response, 200, { sessions: transcript.listSessions(tenantId) })
       return
     }
     if (method === 'POST' && segments.length === 3 && segments[1] === 'session' && segments[2] === 'new') {
@@ -163,6 +162,7 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
         mcpServers: [],
       }))
       const sessionId = (result as { sessionId?: string }).sessionId ?? ''
+      if (sessionId !== '') transcript.registerSession(tenantId, sessionId, cwd)
       transcript.audit(tenantId, 'session-new', `${sessionId} cwd=${cwd}`)
       json(response, 200, result)
       return
@@ -176,10 +176,26 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
           json(response, 400, { error: 'text required' })
           return
         }
+        // The runtime may have been reaped since this session last ran: ACP
+        // prompts only work on open sessions, so re-open (resume) first and
+        // treat "already active" as success. The registry's cwd is what
+        // resume must repeat.
+        const cwd = transcript.sessionCwd(tenantId, sessionId)
+        if (cwd !== undefined) {
+          await manager.withTenant(tenantId, async (runtime) => {
+            try {
+              await runtime.request('session/resume', { sessionId, cwd, mcpServers: [] })
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error)
+              if (!message.includes('already active')) throw error
+            }
+          })
+        }
         const result = await manager.withTenant(tenantId, runtime => runtime.request('session/prompt', {
           sessionId,
           prompt: [{ type: 'text', text: body.text }],
         }))
+        transcript.registerSession(tenantId, sessionId, cwd ?? '')
         transcript.audit(tenantId, 'session-prompt', `${sessionId} stop=${(result as { stopReason?: string }).stopReason ?? '?'}`)
         json(response, 200, result)
         return
@@ -219,8 +235,14 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
         json(response, 400, { error: 'invalid json' })
         return
       }
-      // Generic outward message: internal errors can carry paths and spawn
-      // diagnostics that no tenant should see.
+      // Provider rate limits deserve a tenant-actionable answer; everything
+      // else stays generic (internal errors can carry paths and spawn
+      // diagnostics no tenant should see).
+      const message = error instanceof Error ? error.message : String(error)
+      if (/rate.?limit|tpm.rpm|exceeds tpm|insufficient quota/i.test(message)) {
+        json(response, 429, { error: 'model provider rate limited; retry in a minute' })
+        return
+      }
       console.error('[platform-bff] request failed:', error)
       json(response, 500, { error: 'internal error' })
     })
