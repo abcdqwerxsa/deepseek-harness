@@ -14,6 +14,9 @@ services:
         HTTPS_PROXY: ""
         all_proxy: ""
         ALL_PROXY: ""
+        # Injected by build.sh (export DSH_CLIENT_COMMIT_HASH=...): the client
+        # build embeds the source commit and the tree carries no .git.
+        DSH_CLIENT_COMMIT_HASH: ${DSH_CLIENT_COMMIT_HASH:?export DSH_CLIENT_COMMIT_HASH before building}
     env_file: .env
     environment:
       # Inside the compose network the gateway reaches the platform directly;

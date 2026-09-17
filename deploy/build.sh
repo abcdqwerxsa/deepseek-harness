@@ -4,4 +4,5 @@
 set -e
 cd "$(dirname "$0")"
 hash=$(git -C .. rev-parse --short=7 HEAD)
-exec docker compose build --build-arg DSH_CLIENT_COMMIT_HASH="$hash" "$@" platform
+export DSH_CLIENT_COMMIT_HASH="$hash"
+exec docker compose build "$@" platform
