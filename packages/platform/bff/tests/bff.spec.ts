@@ -177,6 +177,61 @@ describe('platform BFF', () => {
     expect(calls.filter(method => method === 'session/resume')).toHaveLength(3)
   })
 
+  it('heals a poisoned registry row through an explicit resume (conflict path)', async () => {
+    // Rows written by the pre-fix build carry cwd:''; the upsert must now
+    // rewrite cwd so the authoritative value from a successful resume wins.
+    const server = await startPlatformServer({
+      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha'], [TOKEN_B, 'beta']])),
+      createRuntime: async tenantId => ({
+        tenantId,
+        request: async <T>(method: string): Promise<T> => {
+          if (method === 'session/resume' || method === 'session/prompt') return {} as T
+          throw new Error(`spec fake: ${method}`)
+        },
+        onUpdate: () => () => {},
+        onPermission: () => {},
+        get lastUsedAt(): number {
+          return Date.now()
+        },
+        dispose: async () => {},
+        exited: () => new Promise<void>(() => {}),
+      }),
+    })
+    cleanupFns.push(() => server.close())
+
+    // First resume registers the row; a second resume with a different
+    // (authoritative) cwd must rewrite it, healing pre-fix poisoned rows.
+    await api(server, TOKEN_A, '/api/session/sess-poison/resume', { method: 'POST', body: JSON.stringify({ cwd: '/ws/first' }) })
+    const poisoned = await (await api(server, TOKEN_A, '/api/sessions')).json() as { sessions: { sessionId: string; cwd: string }[] }
+    expect(poisoned.sessions.find(item => item.sessionId === 'sess-poison')?.cwd).toBe('/ws/first')
+    await api(server, TOKEN_A, '/api/session/sess-poison/resume', { method: 'POST', body: JSON.stringify({ cwd: '/ws/healed' }) })
+    const healed = await (await api(server, TOKEN_A, '/api/sessions')).json() as { sessions: { sessionId: string; cwd: string }[] }
+    expect(healed.sessions.find(item => item.sessionId === 'sess-poison')?.cwd).toBe('/ws/healed')
+  })
+
+  it('answers 404 on the explicit resume route when the session is gone', async () => {
+    const server = await startPlatformServer({
+      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha'], [TOKEN_B, 'beta']])),
+      createRuntime: async tenantId => ({
+        tenantId,
+        request: async <T>(method: string): Promise<T> => {
+          if (method === 'session/resume') throw new Error('session is not resumable: gone')
+          throw new Error(`spec fake: ${method}`)
+        },
+        onUpdate: () => () => {},
+        onPermission: () => {},
+        get lastUsedAt(): number {
+          return Date.now()
+        },
+        dispose: async () => {},
+        exited: () => new Promise<void>(() => {}),
+      }),
+    })
+    cleanupFns.push(() => server.close())
+    const gone = await api(server, TOKEN_A, '/api/session/sess-gone/resume', { method: 'POST', body: JSON.stringify({ cwd: '/ws/alpha' }) })
+    expect(gone.status).toBe(404)
+  })
+
   it('answers 404 when the registry references a session the runtime no longer has', async () => {
     const server = await startPlatformServer({
       authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha'], [TOKEN_B, 'beta']])),

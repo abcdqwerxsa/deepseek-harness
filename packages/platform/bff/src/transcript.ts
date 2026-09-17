@@ -94,7 +94,7 @@ export class TranscriptStore {
     const now = new Date().toISOString()
     this.db.prepare(`
       INSERT INTO sessions (tenant_id, session_id, cwd, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT (tenant_id, session_id) DO UPDATE SET last_seen_at = excluded.last_seen_at
+      ON CONFLICT (tenant_id, session_id) DO UPDATE SET last_seen_at = excluded.last_seen_at, cwd = excluded.cwd
     `).run(tenantId, sessionId, cwd, now, now)
   }
 

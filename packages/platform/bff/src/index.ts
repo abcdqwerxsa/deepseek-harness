@@ -215,11 +215,15 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
           return
         }
         const cwd = body.cwd
-        const result = await manager.withTenant(tenantId, runtime => runtime.request('session/resume', {
-          sessionId,
-          cwd,
-          mcpServers: [],
-        }))
+        const result = await manager.withTenant(tenantId, async (runtime) => {
+          try {
+            return await runtime.request('session/resume', { sessionId, cwd, mcpServers: [] })
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            if (message.includes('not resumable')) throw new SessionGoneError(sessionId)
+            throw error
+          }
+        })
         transcript.registerSession(tenantId, sessionId, cwd)
         json(response, 200, result)
         return
