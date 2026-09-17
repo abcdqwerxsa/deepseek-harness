@@ -33,10 +33,12 @@ manifests, spawn-failure double-acquirer.
 
 ## Known gaps (pre-deployment requirements)
 
-1. **Per-child OS isolation is not wired.** The spawn spec accepts any
-   `command`, so deploy a `bwrap`/userns wrapper in `composeTenantRuntimeFactory`
-   before tenants are not mutually trusted; same-UID `/proc` reads are the
-   concrete risk (keys ride in child env).
+1. **Per-child OS isolation is wired but off by default.**
+   `composeTenantRuntimeFactory` runs `PLATFORM_ISOLATION` as an argv prefix
+   (see `deploy/.env.example` for the bwrap line) and the child environment is
+   a fixed minimal set — BFF secrets never reach tenants (e2e-locked). Enable
+   the wrapper before tenants are not mutually trusted; same-UID `/proc`
+   reads remain the concrete risk while it is off.
 2. **OIDC is an interface, not an implementation.** Dev tokens are static and
    long-lived; rotate them and front the BFF with the internal TLS gateway.
 3. No CORS/rate-limit/body-size caps — the gateway in front owns these.
@@ -45,6 +47,15 @@ manifests, spawn-failure double-acquirer.
 5. Spawned-process `request_permission` e2e pending (mock-server per-call
    tool arguments); forwarding logic is otherwise test-locked end to end.
 6. Multi-host scale-out is unimplemented (single-process manager by design).
+
+## Deployment
+
+`deploy/` ships the Docker Compose stack (platform container + Caddy TLS
+gateway + persistent volume); the image was built and smoke-verified
+end to end: portal serves, unauthenticated API returns 401, and a real
+ACP session round trip with transcript and usage aggregation completes
+inside the container against a host mock provider. `deploy/build.sh`
+injects the source commit for the client build environment.
 
 ## Operational notes
 

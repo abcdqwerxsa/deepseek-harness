@@ -11,6 +11,8 @@ import {
   type TenantRuntimeManagerOptions,
 } from '@deepseek-ai/dsh-orchestrator'
 import { bearerOf, type Authenticator } from './auth.ts'
+
+export { bearerOf, devTokenAuthenticator, type Authenticator, type TenantPrincipal } from './auth.ts'
 import { TranscriptStore } from './transcript.ts'
 
 export { composeTenantRuntimeFactory, type ComposeTenantRuntimeOptions } from './compose.ts'

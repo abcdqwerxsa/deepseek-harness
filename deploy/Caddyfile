@@ -1,0 +1,19 @@
+# Internal-network TLS termination with Caddy's built-in CA; point tenants at
+# https://<host>:8443 and trust the CA cert from caddy-data (or bring your own
+# cert pair and replace the `tls internal` line).
+{
+  admin off
+}
+
+:443 {
+  tls internal
+  encode zstd gzip
+  # WebSocket upgrades pass through reverse_proxy transparently.
+  reverse_proxy platform:8080
+  header {
+    Strict-Transport-Security "max-age=31536000"
+    X-Content-Type-Options nosniff
+    Referrer-Policy no-referrer
+    -Server
+  }
+}

@@ -1,0 +1,12 @@
+# Hermetic build context: dependencies and build outputs are regenerated
+# inside the image; stale incremental state (tsbuildinfo) must never leak in.
+**/node_modules
+**/lib
+**/dist
+**/*.tsbuildinfo
+.git
+.pi
+.codegraph
+plans
+docs
+*.log

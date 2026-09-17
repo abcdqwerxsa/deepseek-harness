@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -136,5 +136,68 @@ describe('platform BFF over real spawned runtimes', () => {
     expect(usage.totals.sessions).toBeGreaterThanOrEqual(1)
     expect(usage.totals.turns).toBeGreaterThanOrEqual(1)
     expect(usage.totals.messages).toBeGreaterThanOrEqual(1)
+  }, TEST_BUDGET_MS)
+
+  it('spawns tenants through an isolation wrapper with a minimal environment', async () => {
+    const mock = await startMockLlmServer({
+      sequence: ['success'],
+      apiKey: 'bff-e2e-key',
+      successText: 'WRAPPED OK',
+      repeatLast: true,
+    })
+    cleanupFns.push(() => mock.close())
+    const tenantsRoot = mkdtempSync(join(tmpdir(), 'dsh-bff-wrap-'))
+    cleanupFns.push(() => { rmSync(tenantsRoot, { recursive: true, force: true }) })
+    const dumpPath = join(tenantsRoot, 'env-dump.json')
+    const fixture = new URL('./fixtures/exec-env-dump.mjs', import.meta.url).pathname
+    // A secret the BFF itself carries must never reach the tenant child.
+    process.env.PLATFORM_CANARY_SECRET = 'leak-me-not'
+    const platform = await startPlatformServer({
+      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha']])),
+      createRuntime: composeTenantRuntimeFactory({
+        tenantsRoot,
+        dshBin,
+        apiKey: 'bff-e2e-key',
+        baseUrl: mock.baseURL,
+        dshVersion: 'bff-e2e',
+        settingsYaml: 'llm-deepseek:\n  protocol: chat-completions\n',
+        isolationCommand: [process.execPath, fixture, dumpPath],
+      }),
+    })
+    try {
+      const created = await api(platform, TOKEN_A, '/api/session/new', {
+        method: 'POST',
+        body: JSON.stringify({ cwd: join(tenantsRoot, 'scratch') }),
+      })
+      const { sessionId } = await created.json() as { sessionId: string }
+      const prompted = await api(platform, TOKEN_A, `/api/session/${sessionId}/prompt`, {
+        method: 'POST',
+        body: JSON.stringify({ text: 'through the wrapper' }),
+      })
+      expect(await prompted.json()).toEqual({ stopReason: 'end_turn' })
+
+      const dump = JSON.parse(readFileSync(dumpPath, 'utf8')) as {
+        argv: string[]
+        env: Record<string, string>
+      }
+      // The wrapper ran first, then the real command after its own argv.
+      expect(dump.argv).toEqual([process.execPath, dshBin, '--profile', 'acp'])
+      // The child environment is exactly the minimal compose set — no canary,
+      // no ambient BFF variables leaking in with the injected key.
+      expect(Object.keys(dump.env).sort()).toEqual([
+        'DEEPSEEK_API_KEY',
+        'DEEPSEEK_BASE_URL',
+        'DSH_HOME',
+        'DSH_TELEMETRY_DISABLED',
+        'HOME',
+        'LANG',
+        'PATH',
+      ])
+      expect(dump.env.PLATFORM_CANARY_SECRET).toBeUndefined()
+      expect(dump.env.DEEPSEEK_API_KEY).toBe('bff-e2e-key')
+    } finally {
+      delete process.env.PLATFORM_CANARY_SECRET
+      await platform.close()
+    }
   }, TEST_BUDGET_MS)
 })

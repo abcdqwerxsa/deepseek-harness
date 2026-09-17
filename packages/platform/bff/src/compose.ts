@@ -6,8 +6,10 @@ import { provisionTenantHome } from '@deepseek-ai/dsh-tenant-profile'
 /**
  * Deployment glue: compose the tenant runtime factory an internal single-host
  * deployment needs — provisioned home under a tenants root, spawned built
- * `dsh --profile acp` child, platform-held model key injected at spawn time
- * only (never written into the home).
+ * `dsh --profile acp` child with a minimal environment (the platform key is
+ * injected at spawn time only, never written into the home, and nothing else
+ * from the BFF's own environment leaks in), optionally wrapped in an
+ * isolation argv prefix such as `bwrap`.
  * @module
  */
 
@@ -24,6 +26,11 @@ export interface ComposeTenantRuntimeOptions {
   readonly dshVersion: string
   /** Optional settings.yaml content written into each home (tests point the adapter at a mock). */
   readonly settingsYaml?: string
+  /**
+   * Optional argv prefix wrapping each tenant child (`bwrap`, a container
+   * runtime, ...): the child runs as `<prefix...> node <dshBin> --profile acp`.
+   */
+  readonly isolationCommand?: readonly string[]
 }
 
 export function composeTenantRuntimeFactory(options: ComposeTenantRuntimeOptions): TenantRuntimeFactory {
@@ -36,17 +43,29 @@ export function composeTenantRuntimeFactory(options: ComposeTenantRuntimeOptions
     if (options.settingsYaml !== undefined) {
       writeFileSync(join(homeDir, 'settings.yaml'), options.settingsYaml)
     }
+    const wrapper = options.isolationCommand ?? []
+    // Deliberately minimal child environment: the tenant child never sees the
+    // BFF's own variables (tokens, future secrets) — only what dsh needs.
+    const env: Record<string, string> = {
+      PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+      HOME: homeDir,
+      DSH_HOME: homeDir,
+      DSH_TELEMETRY_DISABLED: '1',
+      DEEPSEEK_API_KEY: options.apiKey,
+    }
+    if (process.env.LANG !== undefined) env.LANG = process.env.LANG
+    if (options.baseUrl !== undefined) env.DEEPSEEK_BASE_URL = options.baseUrl
     return spawnAcpStdioRuntime(tenantId, {
-      command: process.execPath,
-      args: [options.dshBin, '--profile', 'acp'],
+      command: wrapper[0] ?? process.execPath,
+      args: [
+        ...wrapper.slice(1),
+        ...(wrapper.length > 0 ? [process.execPath] : []),
+        options.dshBin,
+        '--profile',
+        'acp',
+      ],
       cwd: workspaceDir,
-      env: {
-        ...process.env,
-        DSH_HOME: homeDir,
-        DSH_TELEMETRY_DISABLED: '1',
-        DEEPSEEK_API_KEY: options.apiKey,
-        ...(options.baseUrl === undefined ? {} : { DEEPSEEK_BASE_URL: options.baseUrl }),
-      },
+      env,
     })
   }
 }
