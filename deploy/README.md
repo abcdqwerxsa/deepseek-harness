@@ -36,12 +36,12 @@ data isolation is not implemented (see SECURITY-NOTES gap 1).
 
 - `Dockerfile` — multi-stage: the builder compiles the workspace (official Node image carries the dev headers; `gcc` covers the native addon), then a slim runtime carries the built tree plus production dependencies and `bwrap`.
 - `server.mjs` — the container entrypoint: environment-driven `startPlatformServer` + `composeTenantRuntimeFactory`.
-- `docker-compose.yml` — services, the data volume, and the internal network; the gateway owns TLS, and with it rate limiting and body limits.
+- `docker-compose.yml` — services, the data volume, and the internal network; the gateway owns TLS and the body limit (rate limiting needs a Caddy plugin build).
 - `Caddyfile` — TLS termination, reverse proxy (WebSocket upgrades pass through), and the 8 MB request-body cap.
 - The child environment is a fixed minimal set (`PATH`, `HOME`, `DSH_HOME`, telemetry-off, the model key) — BFF secrets never reach tenant children; the wrapper e2e locks this.
 
 ## Known Limitations and Deferred Work
 
 - Single-host by design; scale-out needs tenant-affinity routing first (the `TenantRuntime` seam is ready).
-- The example bwrap line maps a private `/tmp` and read-only `/app`/`/usr`; review mounts before enabling extra tools that need wider filesystem access.
+- The example bwrap line maps a private `/tmp` and read-only `/app`/`/usr`/`/etc`; review mounts before enabling extra tools that need wider filesystem access.
 - Caddy's internal CA is a convenience for intranets; production PKI should replace it.

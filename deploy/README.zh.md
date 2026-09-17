@@ -35,12 +35,12 @@ SECURITY-NOTES 缺口 1）。
 
 - `Dockerfile` — 多阶段：builder 编译整个工作区（官方 Node 镜像自带开发头文件；`gcc` 覆盖原生插件），slim 运行时携带构建产物、生产依赖与 `bwrap`。
 - `server.mjs` — 容器入口：环境变量驱动的 `startPlatformServer` + `composeTenantRuntimeFactory`。
-- `docker-compose.yml` — 服务、数据卷与内网；网关负责 TLS，以及限流与 body 上限。
+- `docker-compose.yml` — 服务、数据卷与内网；网关负责 TLS 与 body 上限（限流需要 Caddy 插件构建）。
 - `Caddyfile` — TLS 终结、反向代理（WebSocket 升级透明透传）与 8MB 请求体上限。
 - 子进程环境是固定的最小集合（`PATH`、`HOME`、`DSH_HOME`、遥测关闭、模型 key）——BFF 自身的秘密绝不进入租户子进程；wrapper e2e 锁定了这一点。
 
 ## 已知限制与延后工作
 
 - 刻意单机；横向扩展需先做租户亲和路由（`TenantRuntime` 接缝已就绪）。
-- 示例 bwrap 行映射私有 `/tmp` 与只读 `/app`/`/usr`；启用需要更宽文件系统访问的工具前请先审查挂载。
+- 示例 bwrap 行映射私有 `/tmp` 与只读 `/app`/`/usr`/`/etc`；启用需要更宽文件系统访问的工具前请先审查挂载。
 - Caddy 内置 CA 是内网便利项；生产 PKI 应替换之。
