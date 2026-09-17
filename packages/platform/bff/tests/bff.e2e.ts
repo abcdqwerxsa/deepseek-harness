@@ -1,10 +1,10 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import WebSocket from 'ws'
 import { startMockLlmServer, type MockLlmServer } from '@deepseek-ai/dsh-llm-mock-server'
 import { composeTenantRuntimeFactory } from '../src/compose.ts'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { devTokenAuthenticator } from '../src/auth.ts'
 import { messageText, startPlatformServer, type PlatformServer } from '../src/index.ts'
@@ -149,9 +149,12 @@ describe('platform BFF over real spawned runtimes', () => {
     const tenantsRoot = mkdtempSync(join(tmpdir(), 'dsh-bff-wrap-'))
     cleanupFns.push(() => { rmSync(tenantsRoot, { recursive: true, force: true }) })
     const dumpPath = join(tenantsRoot, 'env-dump.json')
-    const fixture = new URL('./fixtures/exec-env-dump.mjs', import.meta.url).pathname
-    // A secret the BFF itself carries must never reach the tenant child.
+    const fixture = fileURLToPath(new URL('./fixtures/exec-env-dump.mjs', import.meta.url))
+    // A secret the BFF itself carries must never reach the tenant child, and
+    // a deterministic LANG so the whitelist assertion does not depend on the
+    // host environment.
     process.env.PLATFORM_CANARY_SECRET = 'leak-me-not'
+    process.env.LANG = 'C.UTF-8'
     const platform = await startPlatformServer({
       authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha']])),
       createRuntime: composeTenantRuntimeFactory({
@@ -197,6 +200,7 @@ describe('platform BFF over real spawned runtimes', () => {
       expect(dump.env.DEEPSEEK_API_KEY).toBe('bff-e2e-key')
     } finally {
       delete process.env.PLATFORM_CANARY_SECRET
+      delete process.env.LANG
       await platform.close()
     }
   }, TEST_BUDGET_MS)

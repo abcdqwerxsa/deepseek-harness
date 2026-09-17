@@ -33,12 +33,14 @@ manifests, spawn-failure double-acquirer.
 
 ## Known gaps (pre-deployment requirements)
 
-1. **Per-child OS isolation is wired but off by default.**
-   `composeTenantRuntimeFactory` runs `PLATFORM_ISOLATION` as an argv prefix
-   (see `deploy/.env.example` for the bwrap line) and the child environment is
-   a fixed minimal set — BFF secrets never reach tenants (e2e-locked). Enable
-   the wrapper before tenants are not mutually trusted; same-UID `/proc`
-   reads remain the concrete risk while it is off.
+1. **Per-child OS isolation is wired but off by default, and the shipped
+   example isolates host-from-tenant only.** `composeTenantRuntimeFactory`
+   runs `PLATFORM_ISOLATION` as an argv prefix and the child environment is a
+   fixed minimal set — BFF secrets never reach tenants (e2e-locked). The
+   documented bwrap line shares all of `/data` with every child at one UID:
+   cross-tenant data isolation is NOT implemented, and tenants that are not
+   mutually trusted need per-tenant bind scoping (or per-tenant containers)
+   beyond this example.
 2. **OIDC is an interface, not an implementation.** Dev tokens are static and
    long-lived; rotate them and front the BFF with the internal TLS gateway.
 3. No CORS/rate-limit/body-size caps — the gateway in front owns these.

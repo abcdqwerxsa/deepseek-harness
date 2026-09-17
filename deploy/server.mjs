@@ -14,9 +14,19 @@ if (!Array.isArray(tokens) || tokens.length === 0) {
   process.exit(2)
 }
 
-const isolation = process.env.PLATFORM_ISOLATION === undefined || process.env.PLATFORM_ISOLATION === ''
-  ? undefined
-  : JSON.parse(process.env.PLATFORM_ISOLATION)
+const isolationRaw = process.env.PLATFORM_ISOLATION
+let isolation
+if (isolationRaw !== undefined && isolationRaw !== '') {
+  try {
+    isolation = JSON.parse(isolationRaw)
+  } catch {
+    isolation = undefined
+  }
+  if (!Array.isArray(isolation) || isolation.length === 0 || !isolation.every(v => typeof v === 'string')) {
+    console.error('platform: PLATFORM_ISOLATION must be a JSON array of strings (e.g. ["bwrap", "--ro-bind", ...])')
+    process.exit(2)
+  }
+}
 
 const dbPath = process.env.PLATFORM_DB ?? '/data/platform.sqlite'
 const tenantsRoot = process.env.PLATFORM_TENANTS_ROOT ?? '/data/tenants'
@@ -32,12 +42,21 @@ const platform = await startPlatformServer({
     dshVersion: process.env.PLATFORM_DSH_VERSION ?? 'unpinned',
     ...(process.env.DEEPSEEK_BASE_URL === undefined ? {} : { baseUrl: process.env.DEEPSEEK_BASE_URL }),
     ...(process.env.PLATFORM_SETTINGS_YAML === undefined || process.env.PLATFORM_SETTINGS_YAML === '' ? {} : { settingsYaml: process.env.PLATFORM_SETTINGS_YAML }),
+    ...(process.env.PLATFORM_FORCE_REPROVISION === 'true' ? { forceReprovision: true } : {}),
     ...(isolation === undefined ? {} : { isolationCommand: isolation }),
   }),
   dbPath,
   host: process.env.PLATFORM_HOST ?? '0.0.0.0',
   port: Number(process.env.PLATFORM_PORT ?? 8080),
-  ...(process.env.PLATFORM_MAX_CONCURRENT === undefined ? {} : { maxConcurrent: Number(process.env.PLATFORM_MAX_CONCURRENT) }),
+  ...(() => {
+    if (process.env.PLATFORM_MAX_CONCURRENT === undefined) return {}
+    const parsed = Number(process.env.PLATFORM_MAX_CONCURRENT)
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      console.error('platform: PLATFORM_MAX_CONCURRENT must be a positive integer')
+      process.exit(2)
+    }
+    return { maxConcurrent: parsed }
+  })(),
 })
 
 console.log(`platform listening on ${platform.port} (portal at /, api at /api/)`)

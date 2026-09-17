@@ -31,6 +31,11 @@ export interface ComposeTenantRuntimeOptions {
    * runtime, ...): the child runs as `<prefix...> node <dshBin> --profile acp`.
    */
   readonly isolationCommand?: readonly string[]
+  /**
+   * Re-provision over a version-locked manifest (platform upgrades): the
+   * alternative is deleting `<tenantsRoot>/<tenantId>` and its workspace data.
+   */
+  readonly forceReprovision?: boolean
 }
 
 export function composeTenantRuntimeFactory(options: ComposeTenantRuntimeOptions): TenantRuntimeFactory {
@@ -39,6 +44,7 @@ export function composeTenantRuntimeFactory(options: ComposeTenantRuntimeOptions
       homeDir: join(options.tenantsRoot, tenantId, 'home'),
       workspaceDir: join(options.tenantsRoot, tenantId, 'workspace'),
       dshVersion: options.dshVersion,
+      ...(options.forceReprovision === true ? { force: true } : {}),
     })
     if (options.settingsYaml !== undefined) {
       writeFileSync(join(homeDir, 'settings.yaml'), options.settingsYaml)

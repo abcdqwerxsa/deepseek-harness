@@ -10,3 +10,4 @@
 plans
 docs
 *.log
+**/.env

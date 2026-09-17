@@ -20,14 +20,24 @@ docker compose up -d --build
 # portal: https://<host>:8443/  (trust Caddy's CA from the caddy-data volume, or bring your own cert)
 ```
 
-Rotate tokens by editing `.env` and re-running `docker compose up -d`. Upgrade the platform by rebuilding the image — `PLATFORM_DSH_VERSION` re-locks tenant manifests deliberately (re-provisioning rejects version drift without `force`; bump the stamp consciously).
+`deploy/.env` never enters the image (`.dockerignore` excludes `.env` files).
+Rotate tokens by editing `.env` and re-running `docker compose up -d`.
+
+Upgrading the platform by bumping `PLATFORM_DSH_VERSION` re-locks tenant
+manifests: re-provisioning rejects version drift by default. Either keep the
+stamp stable across compatible upgrades, or set `PLATFORM_FORCE_REPROVISION=true`
+for one deployment (the alternative is deleting `<tenant>` data volumes).
+
+The example bwrap wrapper isolates the host from tenants, NOT tenants from
+each other: it shares all of `/data` with every child at one UID. Cross-tenant
+data isolation is not implemented (see SECURITY-NOTES gap 1).
 
 ## Understand the pieces
 
 - `Dockerfile` — multi-stage: the builder compiles the workspace (official Node image carries the dev headers; `gcc` covers the native addon), then a slim runtime carries the built tree plus production dependencies and `bwrap`.
 - `server.mjs` — the container entrypoint: environment-driven `startPlatformServer` + `composeTenantRuntimeFactory`.
 - `docker-compose.yml` — services, the data volume, and the internal network; the gateway owns TLS, and with it rate limiting and body limits.
-- `Caddyfile` — TLS termination and reverse proxy (WebSocket upgrades pass through).
+- `Caddyfile` — TLS termination, reverse proxy (WebSocket upgrades pass through), and the 8 MB request-body cap.
 - The child environment is a fixed minimal set (`PATH`, `HOME`, `DSH_HOME`, telemetry-off, the model key) — BFF secrets never reach tenant children; the wrapper e2e locks this.
 
 ## Known Limitations and Deferred Work

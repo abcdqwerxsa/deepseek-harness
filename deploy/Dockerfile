@@ -28,7 +28,7 @@ FROM ${NODE_IMAGE}
 ENV http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= all_proxy=
 RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources \
   && apt-get update \
-  && apt-get install -y --no-install-recommends bubblewrap ca-certificates \
+  && apt-get install -y --no-install-recommends bubblewrap ca-certificates git \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /app /app

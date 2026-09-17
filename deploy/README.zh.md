@@ -20,14 +20,23 @@ docker compose up -d --build
 # portal: https://<host>:8443/  (trust Caddy's CA from the caddy-data volume, or bring your own cert)
 ```
 
-轮换令牌：编辑 `.env` 后重新 `docker compose up -d`。升级平台即重建镜像——`PLATFORM_DSH_VERSION` 会刻意重新锁定租户清单（版本漂移在无 `force` 时被拒绝；有意识地更新该标记）。
+`deploy/.env` 绝不进入镜像（`.dockerignore` 排除了 `.env` 文件）。
+轮换令牌：编辑 `.env` 后重新 `docker compose up -d`。
+
+升级平台时上调 `PLATFORM_DSH_VERSION` 会重新锁定租户清单：默认情况下重新
+置备会拒绝版本漂移。要么在兼容升级间保持标记不变，要么在升级部署时设置
+`PLATFORM_FORCE_REPROVISION=true`（否则只能删除 `<tenant>` 数据卷恢复）。
+
+示例 bwrap 包装隔离的是宿主机与租户，而**不是**租户之间：它把整个
+`/data` 以同一 UID 共享给每个子进程。跨租户数据隔离尚未实现（见
+SECURITY-NOTES 缺口 1）。
 
 ## 理解各部件
 
 - `Dockerfile` — 多阶段：builder 编译整个工作区（官方 Node 镜像自带开发头文件；`gcc` 覆盖原生插件），slim 运行时携带构建产物、生产依赖与 `bwrap`。
 - `server.mjs` — 容器入口：环境变量驱动的 `startPlatformServer` + `composeTenantRuntimeFactory`。
 - `docker-compose.yml` — 服务、数据卷与内网；网关负责 TLS，以及限流与 body 上限。
-- `Caddyfile` — TLS 终结与反向代理（WebSocket 升级透明透传）。
+- `Caddyfile` — TLS 终结、反向代理（WebSocket 升级透明透传）与 8MB 请求体上限。
 - 子进程环境是固定的最小集合（`PATH`、`HOME`、`DSH_HOME`、遥测关闭、模型 key）——BFF 自身的秘密绝不进入租户子进程；wrapper e2e 锁定了这一点。
 
 ## 已知限制与延后工作

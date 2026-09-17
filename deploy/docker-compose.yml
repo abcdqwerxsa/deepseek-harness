@@ -24,6 +24,8 @@ services:
       PLATFORM_DB: /data/platform.sqlite
     volumes:
       - platform-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks: [internal]
     restart: unless-stopped
 

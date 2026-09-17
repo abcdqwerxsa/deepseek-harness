@@ -8,6 +8,9 @@
 :443 {
   tls internal
   encode zstd gzip
+  request_body {
+    max_size 8MB
+  }
   # WebSocket upgrades pass through reverse_proxy transparently.
   reverse_proxy platform:8080
   header {
