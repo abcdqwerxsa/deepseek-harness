@@ -24,6 +24,13 @@ rsync -az --delete -e "ssh -p $REMOTE_PORT" \
   --exclude 'plans' \
   .. "$REMOTE:$SRC_DIR/"
 
-ssh -p "$REMOTE_PORT" "$REMOTE" "cd '$SRC_DIR/deploy' && DSH_CLIENT_COMMIT_HASH='$hash' docker compose build platform"
+ssh -p "$REMOTE_PORT" "$REMOTE" "
+  if [ -f /opt/dsh-platform/.env ]; then
+    cp /opt/dsh-platform/.env '$SRC_DIR/deploy/.env'
+  elif [ ! -f '$SRC_DIR/deploy/.env' ]; then
+    cp '$SRC_DIR/deploy/.env.example' '$SRC_DIR/deploy/.env'
+  fi
+  cd '$SRC_DIR/deploy' && DSH_CLIENT_COMMIT_HASH='$hash' docker compose build platform
+"
 ssh -p "$REMOTE_PORT" "$REMOTE" "cd /opt/dsh-platform && docker compose up -d"
 echo "remote stack updated from $hash"

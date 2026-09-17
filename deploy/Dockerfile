@@ -9,11 +9,12 @@ FROM ${NODE_IMAGE} AS builder
 # intranet-reachable mirrors instead.
 ENV http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= all_proxy=
 ENV npm_config_registry=https://registry.npmmirror.com
+ENV COREPACK_NPM_REGISTRY=https://registry.npmmirror.com
 RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources \
   && apt-get update \
   && apt-get install -y --no-install-recommends gcc libc6-dev python3 ca-certificates \
   && rm -rf /var/lib/apt/lists/*
-RUN corepack enable
+RUN corepack enable && corepack prepare pnpm@11.7.0 --activate
 WORKDIR /app
 # The client build embeds the source commit; build.sh injects it so the
 # 200MB+ .git tree stays out of the build context.
@@ -22,7 +23,7 @@ ENV DSH_CLIENT_COMMIT_HASH=${DSH_CLIENT_COMMIT_HASH}
 ENV CI=true
 # Heavy layer keyed ONLY to the lockfile: pnpm fetch fills the store without
 # any workspace manifests, so source edits never re-download dependencies.
-COPY pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY patches ./patches
 RUN pnpm fetch
 # Source layer: installs from the fetched store (postinstall scripts are in
