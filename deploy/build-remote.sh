@@ -10,7 +10,7 @@ SRC_DIR="${PLATFORM_BUILD_SRC_DIR:-/opt/dsh-src}"
 
 # The rsynced tree carries no .git (build.sh cannot derive the commit there),
 # so this machine's HEAD travels as the build argument.
-hash=$(git -C ../.. rev-parse --short=7 HEAD)
+hash=$(git -C .. rev-parse --short=7 HEAD)
 
 ssh -p "$REMOTE_PORT" "$REMOTE" "mkdir -p '$SRC_DIR'"
 rsync -az --delete -e "ssh -p $REMOTE_PORT" \
@@ -22,7 +22,7 @@ rsync -az --delete -e "ssh -p $REMOTE_PORT" \
   --exclude '**/*.tsbuildinfo' \
   --exclude 'docs' \
   --exclude 'plans' \
-  ../.. "$REMOTE:$SRC_DIR/"
+  .. "$REMOTE:$SRC_DIR/"
 
 ssh -p "$REMOTE_PORT" "$REMOTE" "cd '$SRC_DIR/deploy' && DSH_CLIENT_COMMIT_HASH='$hash' docker compose build platform"
 ssh -p "$REMOTE_PORT" "$REMOTE" "cd /opt/dsh-platform && docker compose up -d"
