@@ -20,8 +20,14 @@ WORKDIR /app
 ARG DSH_CLIENT_COMMIT_HASH
 ENV DSH_CLIENT_COMMIT_HASH=${DSH_CLIENT_COMMIT_HASH}
 ENV CI=true
+# Heavy layer keyed ONLY to the lockfile: pnpm fetch fills the store without
+# any workspace manifests, so source edits never re-download dependencies.
+COPY pnpm-lock.yaml ./
+RUN pnpm fetch
+# Source layer: installs from the fetched store (postinstall scripts are in
+# the tree by now) and builds.
 COPY . .
-RUN pnpm install --frozen-lockfile \
+RUN pnpm install --frozen-lockfile --offline \
   && pnpm run build
 
 FROM ${NODE_IMAGE}
