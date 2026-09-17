@@ -41,6 +41,18 @@ const tenantsRoot = process.env.PLATFORM_TENANTS_ROOT ?? '/data/tenants'
 mkdirSync(dirname(dbPath), { recursive: true })
 mkdirSync(tenantsRoot, { recursive: true })
 
+if (process.env.PLATFORM_MODEL_GATEWAY === '1' && (process.env.PLATFORM_MODEL_GATEWAY_SECRET ?? '') === '') {
+  console.error('platform: PLATFORM_MODEL_GATEWAY=1 requires PLATFORM_MODEL_GATEWAY_SECRET')
+  process.exit(2)
+}
+if (process.env.PLATFORM_MODEL_GATEWAY === '1' && (process.env.DEEPSEEK_API_KEY ?? '') === '') {
+  console.error('platform: PLATFORM_MODEL_GATEWAY=1 requires DEEPSEEK_API_KEY (kept server-side only)')
+  process.exit(2)
+}
+const modelGatewayCompose = process.env.PLATFORM_MODEL_GATEWAY === '1'
+  ? { endpoint: `http://127.0.0.1:${process.env.PLATFORM_PORT ?? '8080'}/internal/model/v1`, secret: process.env.PLATFORM_MODEL_GATEWAY_SECRET ?? '' }
+  : {}
+
 const platform = await startPlatformServer({
   authenticator: devTokenAuthenticator(new Map(tokens)),
   createRuntime: composeTenantRuntimeFactory({
@@ -48,8 +60,9 @@ const platform = await startPlatformServer({
     dshBin: process.env.PLATFORM_DSH_BIN ?? '/app/apps/cli/lib/bin.js',
     apiKey: process.env.DEEPSEEK_API_KEY ?? '',
     dshVersion: process.env.PLATFORM_DSH_VERSION ?? 'unpinned',
-    ...(process.env.DEEPSEEK_BASE_URL === undefined ? {} : { baseUrl: process.env.DEEPSEEK_BASE_URL }),
+    ...(process.env.DEEPSEEK_BASE_URL === undefined || modelGatewayCompose.endpoint !== '' ? {} : { baseUrl: process.env.DEEPSEEK_BASE_URL }),
     ...(process.env.PLATFORM_SETTINGS_YAML === undefined || process.env.PLATFORM_SETTINGS_YAML === '' ? {} : { settingsYaml: process.env.PLATFORM_SETTINGS_YAML }),
+    ...(modelGatewayCompose.endpoint === '' ? {} : { modelGateway: modelGatewayCompose }),
     ...(process.env.PLATFORM_FORCE_REPROVISION === 'true' ? { forceReprovision: true } : {}),
     ...(isolation === undefined ? {} : { isolationCommand: isolation }),
   }),

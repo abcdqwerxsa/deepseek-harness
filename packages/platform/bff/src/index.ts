@@ -11,6 +11,7 @@ import {
   type TenantRuntimeManagerOptions,
 } from '@deepseek-ai/dsh-orchestrator'
 import { bearerOf, type Authenticator } from './auth.ts'
+import { verifyModelToken } from './model-token.ts'
 
 export { bearerOf, devTokenAuthenticator, type Authenticator, type TenantPrincipal } from './auth.ts'
 import { TranscriptStore } from './transcript.ts'
@@ -41,6 +42,17 @@ export interface PlatformServerOptions {
   /** Orchestrator sizing passed through. */
   readonly maxConcurrent?: number
   readonly idleTimeoutMs?: number
+  /**
+   * Model gateway: the platform-held provider key stays in this process and
+   * tenant runtimes receive a signed token for the internal endpoint instead.
+   * Enabled runtimes get DEEPSEEK_API_KEY/DEEPSEEK_BASE_URL overridden
+   * automatically (chat-completions protocol required in settingsYaml).
+   */
+  readonly modelGateway?: {
+    readonly secret: string
+    readonly upstreamBaseUrl: string
+    readonly upstreamApiKey: string
+  }
 }
 
 export interface PlatformServer {
@@ -262,8 +274,66 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
     })
   })
 
+  async function proxyModelCall(
+    request: IncomingMessage,
+    response: ServerResponse,
+    url: URL,
+    gateway: NonNullable<PlatformServerOptions['modelGateway']>,
+  ): Promise<void> {
+    const token = bearerOf(request)
+    const payload = token === undefined ? undefined : verifyModelToken(gateway.secret, token)
+    if (payload === undefined) {
+      json(response, 401, { error: 'invalid model token' })
+      return
+    }
+    const upstreamPath = url.pathname.replace(/^\/internal\/model\/v1/, '') + (url.search || '')
+    const chunks: Buffer[] = []
+    for await (const chunk of request) chunks.push(chunk as Buffer)
+    const body = chunks.length > 0 ? Buffer.concat(chunks) : undefined
+    const upstreamHeaders: Record<string, string> = {
+      authorization: `Bearer ${gateway.upstreamApiKey}`,
+    }
+    if (body !== undefined) upstreamHeaders['content-type'] = request.headers['content-type'] ?? 'application/json'
+    const upstream = await fetch(`${gateway.upstreamBaseUrl.replace(/\/$/u, '')}${upstreamPath}`, {
+      method: request.method ?? 'POST',
+      headers: upstreamHeaders,
+      ...(body === undefined ? {} : { body: new Uint8Array(body) }),
+    })
+    response.writeHead(upstream.status, {
+      'content-type': upstream.headers.get('content-type') ?? 'application/json',
+      'cache-control': 'no-store',
+    })
+    if (upstream.body === null) {
+      response.end()
+      return
+    }
+    // Stream through while sniffing usage for metering (chat-completions
+    // responses carry a usage object - the final SSE frame when streaming).
+    let collected = ''
+    const reader = upstream.body.getReader()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      response.write(value)
+      if (collected.length < 4_000_000) collected += Buffer.from(value).toString('utf8')
+    }
+    response.end()
+    const usage = extractUsage(upstream.headers.get('content-type') ?? '', collected)
+    transcript.audit(
+      payload.tenant,
+      'model-call',
+      `user=${payload.user ?? '-'} status=${String(upstream.status)} ${usage === undefined ? 'tokens=?' : `tokens=${String(usage.prompt)}+${String(usage.completion)}`}`,
+    )
+  }
+
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
+    // Model gateway: signed runtime tokens, not tenant bearer tokens, and no
+    // session state - only provider forwarding and metering.
+    if (options.modelGateway !== undefined && url.pathname.startsWith('/internal/model/')) {
+      await proxyModelCall(request, response, url, options.modelGateway)
+      return
+    }
     if (request.method === 'GET' && url.pathname !== '/api/') {
       const portalFile = PORTAL_FILES.get(url.pathname)
       if (portalFile !== undefined) {
@@ -375,6 +445,28 @@ export function messageText(data: unknown): string {
 }
 
 class InvalidJsonBodyError extends Error {}
+
+/** Best-effort usage extraction from a (possibly SSE) chat-completions response. */
+function extractUsage(contentType: string, collected: string): { prompt: number; completion: number } | undefined {
+  try {
+    if (contentType.includes('text/event-stream')) {
+      let found: { prompt: number; completion: number } | undefined
+      for (const line of collected.split('\n')) {
+        if (!line.startsWith('data:')) continue
+        const data = line.slice(5).trim()
+        if (data === '' || data === '[DONE]') continue
+        const usage = (JSON.parse(data) as { usage?: { prompt_tokens?: number; completion_tokens?: number } }).usage
+        if (usage !== undefined) found = { prompt: usage.prompt_tokens ?? 0, completion: usage.completion_tokens ?? 0 }
+      }
+      return found
+    }
+    const usage = (JSON.parse(collected) as { usage?: { prompt_tokens?: number; completion_tokens?: number } }).usage
+    if (usage === undefined) return undefined
+    return { prompt: usage.prompt_tokens ?? 0, completion: usage.completion_tokens ?? 0 }
+  } catch {
+    return undefined
+  }
+}
 
 /** The registry references a session the tenant runtime no longer has. */
 class SessionGoneError extends Error {}

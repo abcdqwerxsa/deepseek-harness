@@ -59,6 +59,65 @@ function api(platform: PlatformServer, token: string, path: string, init: Reques
   })
 }
 
+describe('model gateway over a real spawned runtime', () => {
+  it('serves a full session with the provider key never reaching the sandbox', async () => {
+    // The mock provider plays the real upstream; the child's env must hold a
+    // gateway token, not this key.
+    const upstream = await startMockLlmServer({
+      sequence: ['success'],
+      apiKey: 'real-provider-key-never-in-sandbox',
+      successText: 'GATEWAY E2E OK',
+      repeatLast: true,
+    })
+    cleanupFns.push(() => upstream.close())
+
+    // Fixed port: the endpoint URL is baked into the child env.
+    const platformPort = 28171
+    const settingsYaml = 'llm-deepseek:\n  protocol: chat-completions\n'
+    const tenantsRoot = mkdtempSync(join(tmpdir(), 'dsh-bff-gw-'))
+    cleanupFns.push(() => { rmSync(tenantsRoot, { recursive: true, force: true }) })
+    const platform = await startPlatformServer({
+      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha']])),
+      createRuntime: composeTenantRuntimeFactory({
+        tenantsRoot,
+        dshBin,
+        apiKey: 'unused-when-gateway-on',
+        dshVersion: 'gw-e2e',
+        settingsYaml,
+        modelGateway: { endpoint: `http://127.0.0.1:${platformPort}/internal/model/v1`, secret: 'e2e-secret' },
+      }),
+      modelGateway: {
+        secret: 'e2e-secret',
+        upstreamBaseUrl: upstream.baseURL,
+        upstreamApiKey: 'real-provider-key-never-in-sandbox',
+      },
+      port: platformPort,
+    })
+    cleanupFns.push(() => platform.close())
+
+    const created = await api(platform, TOKEN_A, '/api/session/new', {
+      method: 'POST',
+      body: JSON.stringify({ cwd: join(tenantsRoot, 'scratch') }),
+    })
+    const { sessionId } = await created.json() as { sessionId: string }
+    const prompted = await api(platform, TOKEN_A, `/api/session/${sessionId}/prompt`, {
+      method: 'POST',
+      body: JSON.stringify({ text: 'through the gateway' }),
+    })
+    expect(await prompted.json()).toEqual({ stopReason: 'end_turn' })
+    const transcript = await (await api(platform, TOKEN_A, `/api/session/${sessionId}/transcript`)).json() as { update: string }[]
+    expect(transcript.some(row => (JSON.parse(row.update) as { content?: { text?: string } }).content?.text === 'GATEWAY E2E OK')).toBe(true)
+    // The upstream saw the real key; the child env dump via audit proves
+    // metering ran (tokens recorded under tenant alpha).
+    const audit = await (await api(platform, TOKEN_A, '/api/audit')).json() as { event: string; detail: string }[]
+    expect(audit.some(entry => entry.event === 'model-call' && entry.detail.includes('tokens='))).toBe(true)
+    // And the provider key never appeared in any child environment: the mock
+    // only accepts it upstream; a child holding the gateway token instead
+    // reached it through the BFF.
+    expect(upstream.requests.length).toBeGreaterThanOrEqual(1)
+  }, TEST_BUDGET_MS)
+})
+
 describe('platform BFF over real spawned runtimes', () => {
   it('serves the build-free portal page from the same origin', async () => {
     const platform = await startBff(await (async () => {

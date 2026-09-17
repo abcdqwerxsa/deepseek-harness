@@ -28,8 +28,11 @@ manifests, spawn-failure double-acquirer.
   resolve `cancelled`; the ACP server additionally rejects unknown options.
 - Telemetry: both contributors unmounted at the profile layer (patch rows
   disabled), so no session record leaves the tenant runtime by construction.
-- Model keys: platform-held, injected at spawn time through the environment,
-  never written into the tenant home.
+- Model keys: platform-held. With the model gateway enabled
+  (`PLATFORM_MODEL_GATEWAY=1`) the provider key never leaves the BFF process -
+  children carry per-tenant signed tokens for the internal endpoint and every
+  provider call is metered in the audit trail. Without the gateway the key
+  rides the child environment (same-UID readable; the bwrap line mitigates).
 
 ## Known gaps (pre-deployment requirements)
 

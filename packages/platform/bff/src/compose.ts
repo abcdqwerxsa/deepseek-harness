@@ -1,6 +1,7 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnAcpStdioRuntime, type TenantRuntimeFactory } from '@deepseek-ai/dsh-orchestrator'
+import { signModelToken } from './model-token.ts'
 import { provisionTenantHome } from '@deepseek-ai/dsh-tenant-profile'
 
 /**
@@ -41,6 +42,18 @@ export interface ComposeTenantRuntimeOptions {
    * alternative is deleting `<tenantsRoot>/<tenantId>` and its workspace data.
    */
   readonly forceReprovision?: boolean
+  /**
+   * Model gateway: children call this BFF-internal OpenAI-compatible endpoint
+   * with a per-tenant signed token instead of the provider key. Requires a
+   * fixed platform port (the endpoint URL is baked into child env) and a
+   * chat-completions settingsYaml.
+   */
+  readonly modelGateway?: {
+    /** Internal endpoint base, e.g. http://127.0.0.1:8080/internal/model/v1 */
+    readonly endpoint: string
+    /** Shared secret; the BFF verifies tokens signed with it. */
+    readonly secret: string
+  }
 }
 
 export function composeTenantRuntimeFactory(options: ComposeTenantRuntimeOptions): TenantRuntimeFactory {
@@ -67,6 +80,12 @@ export function composeTenantRuntimeFactory(options: ComposeTenantRuntimeOptions
     }
     if (process.env.LANG !== undefined) env.LANG = process.env.LANG
     if (options.baseUrl !== undefined) env.DEEPSEEK_BASE_URL = options.baseUrl
+    if (options.modelGateway !== undefined) {
+      // The provider key never reaches the sandbox: children hold a
+      // per-tenant, day-scoped token for the internal endpoint instead.
+      env.DEEPSEEK_API_KEY = signModelToken(options.modelGateway.secret, tenantId)
+      env.DEEPSEEK_BASE_URL = options.modelGateway.endpoint
+    }
     return spawnAcpStdioRuntime(tenantId, {
       command: wrapper[0] ?? process.execPath,
       args: [
