@@ -33,14 +33,15 @@ manifests, spawn-failure double-acquirer.
 
 ## Known gaps (pre-deployment requirements)
 
-1. **Per-child OS isolation is wired but off by default, and the shipped
-   example isolates host-from-tenant only.** `composeTenantRuntimeFactory`
-   runs `PLATFORM_ISOLATION` as an argv prefix and the child environment is a
-   fixed minimal set — BFF secrets never reach tenants (e2e-locked). The
-   documented bwrap line shares all of `/data` with every child at one UID:
-   cross-tenant data isolation is NOT implemented, and tenants that are not
-   mutually trusted need per-tenant bind scoping (or per-tenant containers)
-   beyond this example.
+1. **Cross-tenant filesystem isolation converges through the shipped
+   example; network and key surfaces stay shared.**
+   `composeTenantRuntimeFactory` runs `PLATFORM_ISOLATION` as an argv prefix
+   whose `{tenantDir}` placeholder resolves per tenant, and the documented
+   bwrap line binds each child only its own tree (`--dir` parent, own bind,
+   private user/PID namespace) — siblings and the platform SQLite are
+   invisible, and BFF secrets never reach tenants (e2e-locked). Still shared:
+   one network namespace for all tenants and the platform-held model key
+   injected into each child.
 2. **OIDC is an interface, not an implementation.** Dev tokens are static and
    long-lived; rotate them and front the BFF with the internal TLS gateway.
 3. No CORS/rate-limit/body-size caps — the gateway in front owns these.

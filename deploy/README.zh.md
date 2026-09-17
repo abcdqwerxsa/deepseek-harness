@@ -27,9 +27,10 @@ docker compose up -d --build
 置备会拒绝版本漂移。要么在兼容升级间保持标记不变，要么在升级部署时设置
 `PLATFORM_FORCE_REPROVISION=true`（否则只能删除 `<tenant>` 数据卷恢复）。
 
-示例 bwrap 包装隔离的是宿主机与租户，而**不是**租户之间：它把整个
-`/data` 以同一 UID 共享给每个子进程。跨租户数据隔离尚未实现（见
-SECURITY-NOTES 缺口 1）。
+示例 bwrap 包装收敛了跨租户隔离：`{tenantDir}` 占位符按租户解析，
+`--dir` 在沙箱内创建父目录，每个子进程只 bind 自己的树——兄弟租户与
+平台 SQLite 均不可见。剩余共享面：同一网络命名空间与平台代管的模型
+key（见 SECURITY-NOTES 缺口 1）。
 
 ## 理解各部件
 
@@ -42,5 +43,5 @@ SECURITY-NOTES 缺口 1）。
 ## 已知限制与延后工作
 
 - 刻意单机；横向扩展需先做租户亲和路由（`TenantRuntime` 接缝已就绪）。
-- 示例 bwrap 行映射私有 `/tmp` 与只读 `/app`/`/usr`/`/etc`；启用需要更宽文件系统访问的工具前请先审查挂载。
+- 示例 bwrap 行映射私有 `/tmp`、只读 `/app`/`/usr`/`/etc`，并经 `{tenantDir}` 占位符做每租户 bind；启用需要更宽文件系统访问的工具前请先审查挂载。
 - Caddy 内置 CA 是内网便利项；生产 PKI 应替换之。

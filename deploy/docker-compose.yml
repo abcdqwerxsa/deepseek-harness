@@ -24,6 +24,12 @@ services:
       PLATFORM_DB: /data/platform.sqlite
     volumes:
       - platform-data:/data
+    # The converged bwrap isolation needs unprivileged user namespaces,
+    # which Docker's default seccomp profile denies. This grant is required
+    # only when PLATFORM_ISOLATION is enabled.
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks: [internal]

@@ -28,9 +28,11 @@ manifests: re-provisioning rejects version drift by default. Either keep the
 stamp stable across compatible upgrades, or set `PLATFORM_FORCE_REPROVISION=true`
 for one deployment (the alternative is deleting `<tenant>` data volumes).
 
-The example bwrap wrapper isolates the host from tenants, NOT tenants from
-each other: it shares all of `/data` with every child at one UID. Cross-tenant
-data isolation is not implemented (see SECURITY-NOTES gap 1).
+The example bwrap wrapper converges cross-tenant isolation: the
+`{tenantDir}` placeholder resolves per tenant, `--dir` creates the parent
+inside the sandbox, and each child binds ONLY its own tree — sibling tenants
+and the platform SQLite are invisible. Remaining shared surfaces: one network
+namespace and the platform-held model key (see SECURITY-NOTES gap 1).
 
 ## Understand the pieces
 
@@ -43,5 +45,5 @@ data isolation is not implemented (see SECURITY-NOTES gap 1).
 ## Known Limitations and Deferred Work
 
 - Single-host by design; scale-out needs tenant-affinity routing first (the `TenantRuntime` seam is ready).
-- The example bwrap line maps a private `/tmp` and read-only `/app`/`/usr`/`/etc`; review mounts before enabling extra tools that need wider filesystem access.
+- The example bwrap line maps a private `/tmp`, read-only `/app`/`/usr`/`/etc`, and a per-tenant bind via the `{tenantDir}` placeholder; review mounts before enabling extra tools that need wider filesystem access.
 - Caddy's internal CA is a convenience for intranets; production PKI should replace it.

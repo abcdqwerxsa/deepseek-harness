@@ -164,7 +164,9 @@ describe('platform BFF over real spawned runtimes', () => {
         baseUrl: mock.baseURL,
         dshVersion: 'bff-e2e',
         settingsYaml: 'llm-deepseek:\n  protocol: chat-completions\n',
-        isolationCommand: [process.execPath, fixture, dumpPath],
+        // The {tenantDir} placeholder must resolve to this tenant's own
+        // directory inside the wrapper argv.
+        isolationCommand: [process.execPath, fixture, dumpPath, 'bound={tenantDir}', '--'],
       }),
     })
     try {
@@ -183,8 +185,10 @@ describe('platform BFF over real spawned runtimes', () => {
         argv: string[]
         env: Record<string, string>
       }
-      // The wrapper ran first, then the real command after its own argv.
-      expect(dump.argv).toEqual([process.execPath, dshBin, '--profile', 'acp'])
+      // The wrapper ran first, then the real command after its own argv; the
+      // {tenantDir} placeholder resolved to this tenant's own directory.
+      expect(dump.argv.slice(0, 1)).toEqual([`bound=${join(tenantsRoot, 'alpha')}`])
+      expect(dump.argv.slice(1)).toEqual([process.execPath, dshBin, '--profile', 'acp'])
       // The child environment is exactly the minimal compose set — no canary,
       // no ambient BFF variables leaking in with the injected key.
       expect(Object.keys(dump.env).sort()).toEqual([

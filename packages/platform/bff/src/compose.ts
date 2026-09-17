@@ -29,6 +29,11 @@ export interface ComposeTenantRuntimeOptions {
   /**
    * Optional argv prefix wrapping each tenant child (`bwrap`, a container
    * runtime, ...): the child runs as `<prefix...> node <dshBin> --profile acp`.
+   * The `{tenantDir}` placeholder is replaced per tenant with that tenant's
+   * `<tenantsRoot>/<tenantId>` directory, so one configured wrapper can bind
+   * each child only its own tree (see deploy/.env.example for the converged
+   * bwrap line: `--dir` the parent, `--bind {tenantDir} {tenantDir}`, and
+   * sibling tenants stay invisible).
    */
   readonly isolationCommand?: readonly string[]
   /**
@@ -49,7 +54,8 @@ export function composeTenantRuntimeFactory(options: ComposeTenantRuntimeOptions
     if (options.settingsYaml !== undefined) {
       writeFileSync(join(homeDir, 'settings.yaml'), options.settingsYaml)
     }
-    const wrapper = options.isolationCommand ?? []
+    const tenantDir = join(options.tenantsRoot, tenantId)
+    const wrapper = (options.isolationCommand ?? []).map(part => part.replaceAll('{tenantDir}', tenantDir))
     // Deliberately minimal child environment: the tenant child never sees the
     // BFF's own variables (tokens, future secrets) — only what dsh needs.
     const env: Record<string, string> = {

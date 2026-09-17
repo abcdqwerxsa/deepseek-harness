@@ -1,6 +1,7 @@
-// Test/diagnostic isolation wrapper: argv is `<dumpPath> <realCommand...>`;
-// it dumps the real command and the environment it received, then execs the
-// real command with stdio inherited so the ACP pipes pass straight through.
+// Test/diagnostic isolation wrapper: argv is `<dumpPath> <wrapperArgs...> --
+// <realCommand...>`; it dumps the wrapper args plus the environment it
+// received, then execs the real command with stdio inherited so the ACP
+// pipes pass straight through.
 import { spawn } from 'node:child_process'
 import { writeFileSync } from 'node:fs'
 
@@ -8,9 +9,14 @@ const argv = process.argv.slice(2)
 if (argv.length < 2) {
   process.exit(2)
 }
+const separator = argv.indexOf('--')
+if (separator < 1) {
+  process.exit(2)
+}
 const dumpPath = argv[0]
-const real = argv.slice(1)
-writeFileSync(dumpPath, JSON.stringify({ argv: real, env: process.env }))
+const passthrough = argv.slice(1, separator)
+const real = argv.slice(separator + 1)
+writeFileSync(dumpPath, JSON.stringify({ argv: [...passthrough, ...real], env: process.env }))
 const child = spawn(real[0], real.slice(1), { stdio: 'inherit', env: process.env })
 child.on('exit', (code, signal) => {
   if (signal !== null) process.kill(process.pid, signal)
