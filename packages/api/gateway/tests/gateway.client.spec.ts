@@ -2502,6 +2502,20 @@ describe('Remote stream client carrier lifecycle', () => {
     })
   })
 
+  it('derives the mux socket URL from the document base on subpath mounts', async () => {
+    await withFakeWebSocket(undefined, async () => {
+      ;(globalThis as { document?: unknown }).document = { baseURI: 'https://corp.example:8443/u/deptA/user1/' }
+      try {
+        const client = new RemoteStreamMuxClient()
+        client.start()
+        expect(FakeWebSocket.sockets[0]?.url).toBe('wss://corp.example:8443/u/deptA/user1/api/remote.mux')
+        await client.close()
+      } finally {
+        delete (globalThis as { document?: unknown }).document
+      }
+    })
+  })
+
   it('fails waiters with one socket attempt and lets the owner start the next attempt', async () => {
     await withFakeWebSocket('null', async () => {
       FakeWebSocket.autoOpen = false

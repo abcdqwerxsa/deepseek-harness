@@ -1,193 +1,145 @@
-/* Tenant portal: a deliberately build-free page over the platform BFF's REST
- * and WebSocket surfaces. All state lives in this module; the BFF owns auth,
- * isolation, and transcript persistence. */
+/* Admin console: a deliberately build-free page over the platform BFF's
+ * role-scoped REST surfaces. Members are pointed at their original UI; dept
+ * admins get their department's directory, usage, and audit; platform admins
+ * get the instance overview plus any department drill-down. All state lives
+ * in this module; the BFF owns auth, isolation, and persistence. */
 (function () {
   'use strict'
 
   const $ = (id) => document.getElementById(id)
   const tokenInput = $('token')
   const statusLabel = $('status')
-  const sessionsList = $('sessions')
-  const logView = $('log')
-  const composer = $('composer')
-  const promptBox = $('prompt')
-  const cwdInput = $('cwd')
+  const views = $('views')
 
-  const state = {
-    token: '',
-    socket: null,
-    sessionId: null,
-    /** Ordered message views for the current session (echo + streamed). */
-    turns: [],
-  }
+  const state = { token: '', principal: null }
 
   function api(path, init = {}) {
     return fetch(path, {
       ...init,
       headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json', ...init.headers },
     }).then(async (response) => {
-      if (response.status === 401) throw new Error('unauthorized: check the tenant token')
+      if (response.status === 401) throw new Error('令牌无效或已过期')
+      if (response.status === 403) throw new Error('无权访问该视图')
       const body = await response.json()
       if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`)
       return body
     })
   }
 
-  function status(text) {
+  function status(text, isError = false) {
     statusLabel.textContent = text
+    statusLabel.className = isError ? 'who error' : 'who'
   }
 
-  // ponytail: full rebuild per update — O(n²) on a long streamed turn and a
-  // RangeError past ~65k turns from the spread; fine for a v1 internal portal.
-  function renderTurns() {
-    logView.replaceChildren(...state.turns.map((turn) => {
-      const node = document.createElement('div')
-      node.className = turn.kind
-      if (turn.kind === 'permission') {
-        node.appendChild(document.createTextNode(`审批请求：${turn.summary} `))
-        for (const option of turn.options) {
-          const button = document.createElement('button')
-          button.textContent = option
-          button.addEventListener('click', () => {
-            state.socket?.send(JSON.stringify({
-              type: 'permission-response',
-              id: turn.id,
-              response: { outcome: { outcome: 'selected', optionId: option } },
-            }))
-            // Drop it from state too: renderTurns rebuilds from state.turns,
-            // so a DOM-only removal would resurrect the card on the next update.
-            const index = state.turns.indexOf(turn)
-            if (index >= 0) state.turns.splice(index, 1)
-            node.remove()
-          })
-          node.appendChild(button)
-        }
-      } else {
-        node.textContent = turn.text
-      }
-      return node
-    }))
-    logView.scrollTop = logView.scrollHeight
-  }
-
-  function applyUpdate(update) {
-    if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
-      const last = state.turns[state.turns.length - 1]
-      if (last !== undefined && last.kind === 'msg') last.text += update.content.text
-      else state.turns.push({ kind: 'msg', text: update.content.text })
-    } else if (update.sessionUpdate === 'user_message_chunk' && update.content?.type === 'text') {
-      // The composer already echoed the outgoing text; skip server echo.
-      return
-    } else {
-      state.turns.push({ kind: 'raw', text: `${update.sessionUpdate ?? 'update'}` })
+  function el(tag, attrs = {}, ...children) {
+    const node = document.createElement(tag)
+    for (const [key, value] of Object.entries(attrs)) {
+      if (key === 'text') node.textContent = value
+      else node.setAttribute(key, value)
     }
-    renderTurns()
+    for (const child of children) {
+      if (typeof child === 'string') node.appendChild(document.createTextNode(child))
+      else node.appendChild(child)
+    }
+    return node
   }
 
-  async function loadTranscript(sessionId) {
-    const rows = await api(`/api/session/${sessionId}/transcript`)
-    state.turns = []
-    for (const row of rows) applyUpdate(JSON.parse(row.update))
-    renderTurns()
+  function section(title, ...children) {
+    const heading = el('h2', { text: title })
+    return el('section', {}, heading, ...children)
   }
 
-  function connectSocket() {
-    state.socket?.close()
-    const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const socket = new WebSocket(`${scheme}//${location.host}/ws?token=${encodeURIComponent(state.token)}`)
-    state.socket = socket
-    socket.addEventListener('message', (event) => {
-      const message = JSON.parse(event.data)
-      if (message.type === 'session-update' && message.sessionId === state.sessionId) {
-        applyUpdate(message.update)
-      } else if (message.type === 'permission-request') {
-        const options = (message.request?.options ?? []).map((option) => option.optionId)
-        state.turns.push({
-          kind: 'permission',
-          id: message.id,
-          summary: message.request?.title ?? message.request?.type ?? 'action',
-          options: options.length > 0 ? options : ['cancelled'],
-        })
-        renderTurns()
-      }
+  function table(headers, rows) {
+    const head = el('tr', {}, ...headers.map(h => el('th', { text: h })))
+    const body = rows.map(row => el('tr', {}, ...row.map(cell => el('td', { text: String(cell) }))))
+    return el('table', {}, el('thead', {}, head), el('tbody', {}, ...body))
+  }
+
+  function auditList(rows) {
+    return el('ul', { class: 'audit' }, ...rows.map(row =>
+      el('li', { text: `${row.at}  ${row.tenantId ?? ''}  ${row.event}  ${row.detail ?? ''}` })))
+  }
+
+  function originalUiLink() {
+    const { deptId, userId } = state.principal
+    const url = `/u/${encodeURIComponent(deptId)}/${encodeURIComponent(userId)}/?ptoken=${encodeURIComponent(state.token)}`
+    return el('a', { href: url, class: 'open-ui', text: '打开我的原版工作台 →' })
+  }
+
+  async function render() {
+    views.replaceChildren()
+    const { role, deptId, userId } = state.principal
+    status(`${deptId}/${userId} · ${role}`)
+
+    if (role === 'member') {
+      views.appendChild(section('个人工作区', originalUiLink()))
+      return
+    }
+
+    // Everyone with a governance role also keeps their own original UI.
+    views.appendChild(section('个人工作区', originalUiLink()))
+
+    if (role === 'dept-admin') {
+      await renderDept(deptId)
+      return
+    }
+
+    // platform-admin: instance overview plus per-department drill-down.
+    const overview = await api('/api/admin/overview')
+    const cards = el('div', {},
+      el('div', { class: 'card' }, el('b', { text: String(overview.departments.length) }), '部门'),
+      el('div', { class: 'card' }, el('b', { text: String(overview.acp.live) }), 'ACP 运行时'),
+      el('div', { class: 'card' }, el('b', { text: String(overview.web.live) }), 'Web 运行时'))
+    views.appendChild(section('实例概览', cards,
+      table(['部门', '用户数'], overview.departments.map(d => [d.deptId, d.users]))))
+    const picker = el('select', {}, el('option', { value: '', text: '选择部门查看…' }),
+      ...overview.departments.filter(d => d.deptId !== '_platform').map(d =>
+        el('option', { value: d.deptId, text: d.deptId })))
+    picker.addEventListener('change', () => {
+      if (picker.value !== '') void renderDeptInto(picker.value, views)
     })
-    socket.addEventListener('close', () => { status('连接已断开') })
+    views.appendChild(section('部门下钻', picker, el('div', { id: 'drill' })))
   }
 
-  async function refreshSessions() {
-    const listed = await api('/api/sessions')
-    sessionsList.replaceChildren(...listed.sessions.map((session) => {
-      const item = document.createElement('li')
-      item.textContent = session.sessionId
-      item.setAttribute('data-session-id', session.sessionId)
-      if (session.sessionId === state.sessionId) item.setAttribute('aria-current', 'true')
-      item.addEventListener('click', () => {
-        state.sessionId = session.sessionId
-        loadTranscript(session.sessionId).then(() => {
-          composer.hidden = false
-        }, (error) => {
-          status(error instanceof Error ? error.message : String(error))
-        })
-        refreshSessions().catch(() => {})
-      })
-      return item
-    }))
+  async function renderDept(deptId) {
+    await renderDeptInto(deptId, views)
+  }
+
+  async function renderDeptInto(deptId, container) {
+    let drill = container.querySelector('#drill')
+    if (drill === null) {
+      drill = el('div', { id: 'drill' })
+      container.appendChild(drill)
+    }
+    const members = await api(`/api/dept/members?dept=${encodeURIComponent(deptId)}`)
+    const usage = await api(`/api/dept/usage?dept=${encodeURIComponent(deptId)}`)
+    const audit = await api(`/api/dept/audit?dept=${encodeURIComponent(deptId)}`)
+    drill.replaceChildren(
+      section(`成员 · ${deptId}`, table(['用户', '角色'], members.members.map(m => [m.userId, m.role]))),
+      section('用量', table(['用户', '会话', '回合', '消息', '工具调用'],
+        usage.users.map(u => [u.userId, u.totals.sessions, u.totals.turns, u.totals.messages, u.totals.toolCalls]))),
+      section('审计', auditList(audit)))
   }
 
   async function connect() {
     state.token = tokenInput.value.trim()
     if (state.token === '') {
-      status('请输入访问令牌')
+      status('请输入访问令牌', true)
       return
     }
     try {
-      await refreshSessions()
-      connectSocket()
-      status('已连接')
+      state.principal = await api('/api/whoami')
+      views.hidden = false
+      await render()
     } catch (error) {
-      status(error instanceof Error ? error.message : String(error))
-    }
-  }
-
-  async function newSession() {
-    const cwd = cwdInput.value.trim()
-    if (cwd === '') {
-      status('新建会话需要 workspace 绝对路径')
-      return
-    }
-    try {
-      const created = await api('/api/session/new', { method: 'POST', body: JSON.stringify({ cwd }) })
-      state.sessionId = created.sessionId
-      state.turns = []
-      renderTurns()
-      composer.hidden = false
-      await refreshSessions()
-      status(`会话 ${created.sessionId}`)
-    } catch (error) {
-      status(error instanceof Error ? error.message : String(error))
-    }
-  }
-
-  async function sendPrompt(event) {
-    event.preventDefault()
-    const text = promptBox.value
-    if (text.trim() === '' || state.sessionId === null) return
-    promptBox.value = ''
-    state.turns.push({ kind: 'msg user', text })
-    renderTurns()
-    status('回合进行中…')
-    try {
-      const result = await api(`/api/session/${state.sessionId}/prompt`, { method: 'POST', body: JSON.stringify({ text }) })
-      status(`回合结束（${result.stopReason ?? '?'}）`)
-    } catch (error) {
-      status(error instanceof Error ? error.message : String(error))
+      status(error instanceof Error ? error.message : String(error), true)
     }
   }
 
   $('connect').addEventListener('click', () => { void connect() })
-  $('refresh').addEventListener('click', () => { void refreshSessions().then(() => { status('列表已刷新') }, (error) => { status(String(error)) }) })
-  $('new-session').addEventListener('click', () => { void newSession() })
-  composer.addEventListener('submit', (event) => { void sendPrompt(event) })
+  tokenInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') void connect()
+  })
 
-  window.__tenantPortal = { connect, newSession, refreshSessions, api, state }
+  window.__adminConsole = { connect, api, state }
 })()

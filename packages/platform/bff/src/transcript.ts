@@ -13,6 +13,15 @@ export interface UsageReport {
   }[]
 }
 
+/** Per-department usage rollup: one entry per user ever seen, plus totals. */
+export interface DeptUsageReport {
+  readonly totals: { users: number; sessions: number; turns: number; messages: number; toolCalls: number }
+  readonly users: readonly {
+    readonly userId: string
+    readonly totals: { sessions: number; turns: number; messages: number; toolCalls: number }
+  }[]
+}
+
 /**
  * Platform-side transcript store: every ACP `session/update` the BFF observes
  * is appended here in arrival order, because ACP `session/resume` never
@@ -135,6 +144,21 @@ export class TranscriptStore {
   }
 
   /**
+   * One department's audit trail across its users, newest first. Safe with
+   * any deptId: validated department segments cannot contain GLOB metacharacters,
+   * and the `dept/*` prefix cannot cross into another department.
+   */
+  deptAuditTrail(deptId: string, limit = 100): { at: string; tenantId: string; event: string; detail: string | null }[] {
+    const rows = this.db.prepare(
+      'SELECT at, tenant_id, event, detail FROM audit WHERE tenant_id GLOB ? ORDER BY seq DESC LIMIT ?',
+    ).all(`${deptId}/*`, limit)
+    return rows.map((row) => {
+      const record = row as { at: string; tenant_id: string; event: string; detail: string | null }
+      return { at: record.at, tenantId: record.tenant_id, event: record.event, detail: record.detail }
+    })
+  }
+
+  /**
    * Per-tenant usage aggregates: sessions, turns (successful session-prompt
    * audit rows per session — dsh's ACP bridge emits no user-message updates),
    * agent message chunks, tool calls, and the peak context occupancy observed
@@ -184,6 +208,37 @@ export class TranscriptStore {
         toolCalls: sessions.reduce((sum, entry) => sum + entry.toolCalls, 0),
       },
       sessions,
+    }
+  }
+
+  /**
+   * Per-department usage rollup: aggregates {@link usage} over every user key
+   * seen in the audit or session registries for this department.
+   */
+  deptUsage(deptId: string): DeptUsageReport {
+    const rows = this.db.prepare(`
+      SELECT DISTINCT tenant_id AS tenantId FROM audit WHERE tenant_id GLOB ?
+      UNION
+      SELECT DISTINCT tenant_id AS tenantId FROM sessions WHERE tenant_id GLOB ?
+      UNION
+      SELECT DISTINCT tenant_id AS tenantId FROM transcript WHERE tenant_id GLOB ?
+    `).all(`${deptId}/*`, `${deptId}/*`, `${deptId}/*`)
+    const users = (rows as { tenantId: string }[]).map(({ tenantId }) => {
+      const report = this.usage(tenantId)
+      return {
+        userId: tenantId.slice(deptId.length + 1),
+        totals: report.totals,
+      }
+    })
+    return {
+      totals: {
+        users: users.length,
+        sessions: users.reduce((sum, entry) => sum + entry.totals.sessions, 0),
+        turns: users.reduce((sum, entry) => sum + entry.totals.turns, 0),
+        messages: users.reduce((sum, entry) => sum + entry.totals.messages, 0),
+        toolCalls: users.reduce((sum, entry) => sum + entry.totals.toolCalls, 0),
+      },
+      users,
     }
   }
 }

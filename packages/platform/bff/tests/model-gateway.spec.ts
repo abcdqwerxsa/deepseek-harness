@@ -1,6 +1,8 @@
 import { createServer, type Server } from 'node:http'
 import { afterEach, describe, expect, it } from 'vitest'
-import { devTokenAuthenticator } from '../src/auth.ts'
+import { devTokenAuthenticator, type DevTokenIdentity } from '../src/auth.ts'
+
+const ident = (userId: string, deptId = 'core'): DevTokenIdentity => ({ deptId, userId, role: 'member' })
 import { startPlatformServer, type PlatformServer } from '../src/index.ts'
 import { signModelToken } from '../src/model-token.ts'
 
@@ -46,7 +48,7 @@ describe('model gateway', () => {
     const port = (upstreamServer.server?.address() as { port: number }).port
 
     const platform: PlatformServer = await startPlatformServer({
-      authenticator: devTokenAuthenticator(new Map([[TOKEN, 'alpha']])),
+      authenticator: devTokenAuthenticator(new Map([[TOKEN, ident('alpha')]])),
       createRuntime: async () => { throw new Error('no runtime needed') },
       modelGateway: {
         secret: 'test-secret',
@@ -63,7 +65,7 @@ describe('model gateway', () => {
     expect(unauthorized.status).toBe(401)
 
     // Valid signed token: streams through with the real key.
-    const modelToken = signModelToken('test-secret', 'alpha')
+    const modelToken = signModelToken('test-secret', 'core', 'alpha')
     const forwarded = await fetch(`http://127.0.0.1:${platform.port}/internal/model/v1/chat/completions`, {
       method: 'POST',
       headers: { authorization: `Bearer ${modelToken}`, 'content-type': 'application/json' },
@@ -90,7 +92,7 @@ describe('model gateway', () => {
     cleanup.push(() => new Promise<void>((resolve) => { upstreamServer.server?.close(() => { resolve() }) }))
     const port = (upstreamServer.server?.address() as { port: number }).port
     const platform: PlatformServer = await startPlatformServer({
-      authenticator: devTokenAuthenticator(new Map([[TOKEN, 'alpha']])),
+      authenticator: devTokenAuthenticator(new Map([[TOKEN, ident('alpha')]])),
       createRuntime: async () => { throw new Error('no runtime needed') },
       modelGateway: { secret: 'test-secret', upstreamBaseUrl: `http://127.0.0.1:${port}/v1`, upstreamApiKey: 'k' },
     })

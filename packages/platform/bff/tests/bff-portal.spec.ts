@@ -1,27 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { JSDOM, VirtualConsole } from 'jsdom'
-import { EventEmitter } from 'node:events'
-import { devTokenAuthenticator } from '../src/auth.ts'
+import { devTokenAuthenticator, type DevTokenIdentity } from '../src/auth.ts'
 import { startPlatformServer, type PlatformServer } from '../src/index.ts'
-import type { TenantRuntime } from '@deepseek-ai/dsh-orchestrator'
 
 /**
- * Portal page end to end inside JSDOM: the real HTML and portal.js are
- * fetched from a live BFF with a fake tenant runtime, so the wiring under
- * test is exactly what a browser runs — token connect, session list, new
- * session, prompt echo plus streamed reply, and a clickable permission card.
+ * Admin console page end to end inside JSDOM: the real HTML and portal.js
+ * are fetched from a live BFF, so the wiring under test is exactly what a
+ * browser runs — token connect, role-aware views (member redirect link,
+ * dept-admin department reports, platform-admin overview plus drill-down),
+ * and role-scoped 403s for members reaching for department data.
  */
 
-const TOKEN = 'portal-token'
-
-class FakeRuntimeHub extends EventEmitter {
-  permissionHandler: ((request: unknown) => Promise<unknown>) | undefined
-  updateListener: ((sessionId: string, update: unknown) => void) | undefined
-
-  emitUpdate(sessionId: string, update: unknown): void {
-    this.updateListener?.(sessionId, update)
-  }
-}
+const MEMBER_TOKEN = 'console-member'
+const DEPT_ADMIN_TOKEN = 'console-dept-admin'
+const PLATFORM_ADMIN_TOKEN = 'console-platform-admin'
 
 const cleanupFns: Array<() => Promise<void> | void> = []
 const liveDoms: JSDOM[] = []
@@ -31,42 +23,21 @@ afterEach(async () => {
   while (cleanupFns.length > 0) await cleanupFns.pop()!()
 })
 
-async function startPortalStack(hub: FakeRuntimeHub): Promise<PlatformServer> {
+async function startConsoleStack(): Promise<PlatformServer> {
+  const identities = new Map<string, DevTokenIdentity>([
+    [MEMBER_TOKEN, { deptId: 'deptA', userId: 'user1', role: 'member' }],
+    [DEPT_ADMIN_TOKEN, { deptId: 'deptA', userId: 'lead', role: 'dept-admin' }],
+    [PLATFORM_ADMIN_TOKEN, { deptId: '_platform', userId: 'admin-1', role: 'platform-admin' }],
+  ])
   const server = await startPlatformServer({
-    authenticator: devTokenAuthenticator(new Map([[TOKEN, 'alpha']])),
-    createRuntime: async (tenantId) => {
-      const runtime: TenantRuntime = {
-        tenantId,
-        request: async <T>(method: string): Promise<T> => {
-          if (method === 'session/new') return { sessionId: 'sess-portal' } as T
-          if (method === 'session/prompt') {
-            hub.emitUpdate('sess-portal', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'PORTAL ' } })
-            hub.emitUpdate('sess-portal', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'REPLY' } })
-            return { stopReason: 'end_turn' } as T
-          }
-          if (method === 'session/list') return { sessions: [{ sessionId: 'sess-portal', cwd: '/ws/alpha' }] } as T
-          if (method === 'session/close' || method === 'session/resume') return {} as T
-          throw new Error(`portal fake: unsupported method ${method}`)
-        },
-        onUpdate: (listener) => {
-          hub.updateListener = listener
-          return () => { hub.updateListener = undefined }
-        },
-        onPermission: (handler) => { hub.permissionHandler = handler },
-        get lastUsedAt(): number {
-          return Date.now()
-        },
-        dispose: async () => {},
-        exited: () => new Promise<void>(() => {}),
-      }
-      return runtime
-    },
+    authenticator: devTokenAuthenticator(identities),
+    createRuntime: async () => { throw new Error('no runtime needed for console views') },
   })
   cleanupFns.push(() => server.close())
   return server
 }
 
-async function openPortal(server: PlatformServer): Promise<JSDOM> {
+async function openConsole(server: PlatformServer): Promise<JSDOM> {
   const base = `http://127.0.0.1:${server.port}`
   const html = await (await fetch(`${base}/`)).text()
   const pageErrors: unknown[] = []
@@ -78,7 +49,7 @@ async function openPortal(server: PlatformServer): Promise<JSDOM> {
     resources: 'usable',
     virtualConsole,
     beforeParse: (window) => {
-      // jsdom ships no fetch; route the portal's relative calls to the live
+      // jsdom ships no fetch; route the console's relative calls to the live
       // server through Node's fetch.
       window.fetch = (input: RequestInfo | URL, init?: RequestInit) =>
         fetch(new URL(input instanceof URL ? input.href : typeof input === 'string' ? input : input.url, `${base}/`).toString(), init)
@@ -89,79 +60,75 @@ async function openPortal(server: PlatformServer): Promise<JSDOM> {
   return dom
 }
 
-describe('tenant portal page', () => {
-  it('connects, drives a session, streams a reply, and answers a permission card', async () => {
-    const hub = new FakeRuntimeHub()
-    const server = await startPortalStack(hub)
-    const dom = await openPortal(server)
+function connect(doc: Document, token: string): void {
+  const tokenInput = doc.getElementById('token') as HTMLInputElement
+  tokenInput.value = token
+  doc.getElementById('connect')!.click()
+}
+
+describe('admin console page', () => {
+  it('routes a member straight to their original-UI link', async () => {
+    const server = await startConsoleStack()
+    const dom = await openConsole(server)
     const doc = dom.window.document
 
-    await vi.waitFor(() => { expect(dom.window.__tenantPortal).toBeDefined() })
-    expect(doc.getElementById('composer')!.hidden).toBe(true)
-
-    const tokenInput = doc.getElementById('token') as HTMLInputElement
-    tokenInput.value = TOKEN
-    doc.getElementById('connect')!.click()
-    await vi.waitFor(() => { expect(doc.getElementById('status')!.textContent).toBe('已连接') })
-
-    ;(doc.getElementById('cwd') as HTMLInputElement).value = '/ws/alpha'
-    doc.getElementById('new-session')!.click()
-    await vi.waitFor(() => { expect(doc.getElementById('composer')!.hidden).toBe(false) })
-    // The registry lists the fresh session immediately (live runtime included).
-    await vi.waitFor(() => { expect(doc.querySelector('[data-session-id="sess-portal"]')).not.toBeNull() })
-
-    ;(doc.getElementById('prompt') as HTMLTextAreaElement).value = 'hello portal'
-    doc.getElementById('composer')!.dispatchEvent(new dom.window.Event('submit', { cancelable: true }))
-    await vi.waitFor(() => {
-      const texts = [...doc.querySelectorAll('.msg')].map(node => node.textContent)
-      expect(texts).toContain('hello portal')
-      expect(texts).toContain('PORTAL REPLY')
-    })
-    await vi.waitFor(() => { expect(doc.getElementById('status')!.textContent).toBe('回合结束（end_turn）') })
-
-    const answer = hub.permissionHandler!({ options: [{ optionId: 'allow-once' }] })
-    try {
-      await vi.waitFor(() => { expect(doc.querySelector('.permission button')).not.toBeNull() })
-    } catch (error) {
-      const errors = (dom as JSDOM & { pageErrors?: unknown[] }).pageErrors ?? []
-      const turns = JSON.stringify((dom.window.__tenantPortal as { state: { turns: unknown[] } } | undefined)?.state?.turns ?? 'no-portal')
-      throw new Error(`permission card never rendered; turns=${turns}; pageErrors=${JSON.stringify(errors.map(String))}: ${String(error)}`)
-    }
-    doc.querySelector<HTMLButtonElement>('.permission button')!.click()
-    await expect(answer).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow-once' } })
-
-    // The answered card must not resurrect when the next update re-renders.
-    hub.emitUpdate('sess-portal', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ' after' } })
-    await vi.waitFor(() => {
-      expect([...doc.querySelectorAll('.msg')].map(node => node.textContent)).toContain('PORTAL REPLY after')
-    })
-    expect(doc.querySelector('.permission')).toBeNull()
+    await vi.waitFor(() => { expect(dom.window.__adminConsole).toBeDefined() })
+    connect(doc, MEMBER_TOKEN)
+    await vi.waitFor(() => { expect(doc.getElementById('status')!.textContent).toContain('deptA/user1 · member') })
+    const link = doc.querySelector<HTMLAnchorElement>('a.open-ui')
+    expect(link).not.toBeNull()
+    expect(link!.getAttribute('href')).toBe(`/u/deptA/user1/?ptoken=${MEMBER_TOKEN}`)
+    // No governance sections for a member.
+    expect(doc.querySelectorAll('table').length).toBe(0)
   }, 20_000)
 
-  it('keeps a second viewer blind to a tenant that never shared its token', async () => {
-    const hub = new FakeRuntimeHub()
-    const server = await startPortalStack(hub)
-    const active = await openPortal(server)
-    const bystander = await openPortal(server)
-    const activeDoc = active.window.document
-    const bystanderDoc = bystander.window.document
+  it('renders the department directory, usage, and audit for a dept admin', async () => {
+    const server = await startConsoleStack()
+    const dom = await openConsole(server)
+    const doc = dom.window.document
+    await vi.waitFor(() => { expect(dom.window.__adminConsole).toBeDefined() })
+    connect(doc, DEPT_ADMIN_TOKEN)
+    await vi.waitFor(() => { expect(doc.getElementById('status')!.textContent).toContain('dept-admin') })
+    // Directory lists every deptA identity (member, lead) with roles.
+    await vi.waitFor(() => {
+      const rows = [...doc.querySelectorAll('table td')].map(td => td.textContent)
+      expect(rows).toContain('user1')
+      expect(rows).toContain('lead')
+    })
+    // Usage and audit sections render.
+    await vi.waitFor(() => { expect([...doc.querySelectorAll('h2')].some(h => h.textContent === '用量')).toBe(true) })
+    expect([...doc.querySelectorAll('h2')].some(h => h.textContent === '审计')).toBe(true)
+  }, 20_000)
 
-    await vi.waitFor(() => { expect(active.window.__tenantPortal).toBeDefined() })
-    await vi.waitFor(() => { expect(bystander.window.__tenantPortal).toBeDefined() })
+  it('refuses department data to members and shows the error', async () => {
+    const server = await startConsoleStack()
+    const response = await fetch(`http://127.0.0.1:${server.port}/api/dept/usage?dept=deptA`, {
+      headers: { authorization: `Bearer ${MEMBER_TOKEN}` },
+    })
+    expect(response.status).toBe(403)
+  })
 
-    const tokenInput = activeDoc.getElementById('token') as unknown as HTMLInputElement
-    tokenInput.value = TOKEN
-    activeDoc.getElementById('connect')!.click()
-    await vi.waitFor(() => { expect(activeDoc.getElementById('status')!.textContent).toBe('已连接') })
-    ;(activeDoc.getElementById('cwd') as unknown as HTMLInputElement).value = '/ws/alpha'
-    activeDoc.getElementById('new-session')!.click()
-    await vi.waitFor(() => { expect(activeDoc.getElementById('composer')!.hidden).toBe(false) })
-
-    // A page that never entered alpha's token sees nothing of alpha: no
-    // session list entries, no streamed messages, no permission cards.
-    expect(bystanderDoc.querySelectorAll('[data-session-id]')).toHaveLength(0)
-    expect(bystanderDoc.querySelectorAll('.msg')).toHaveLength(0)
-    expect(bystanderDoc.querySelectorAll('.permission')).toHaveLength(0)
-    expect(bystanderDoc.getElementById('status')!.textContent).toBe('')
+  it('gives the platform admin the instance overview and department drill-down', async () => {
+    const server = await startConsoleStack()
+    const dom = await openConsole(server)
+    const doc = dom.window.document
+    await vi.waitFor(() => { expect(dom.window.__adminConsole).toBeDefined() })
+    connect(doc, PLATFORM_ADMIN_TOKEN)
+    await vi.waitFor(() => { expect(doc.getElementById('status')!.textContent).toContain('platform-admin') })
+    // Overview table lists departments with user counts.
+    await vi.waitFor(() => {
+      const rows = [...doc.querySelectorAll('table td')].map(td => td.textContent)
+      expect(rows).toContain('deptA')
+      expect(rows).toContain('_platform')
+    })
+    // Drill-down into deptA loads its member table into the drill pane.
+    const picker = doc.querySelector<HTMLSelectElement>('select')
+    expect(picker).not.toBeNull()
+    picker!.value = 'deptA'
+    picker!.dispatchEvent(new dom.window.Event('change'))
+    await vi.waitFor(() => {
+      const drill = doc.querySelector('#drill')
+      expect([...drill!.querySelectorAll('table td')].map(td => td.textContent)).toContain('user1')
+    })
   }, 20_000)
 })

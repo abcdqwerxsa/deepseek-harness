@@ -123,9 +123,9 @@ export function provisionTenantHome(options: ProvisionTenantHomeOptions): Provis
     if (recorded.problem !== undefined) conflicts.push(recorded.problem)
     if (recorded.manifest !== undefined) {
       if (recorded.manifest.schema !== 1) conflicts.push(`schema ${JSON.stringify(recorded.manifest.schema)}`)
-      if (recorded.manifest.profileName !== profileName) {
-        conflicts.push(`profileName ${JSON.stringify(recorded.manifest.profileName)}`)
-      }
+      // One home legitimately hosts several profiles (the platform drives
+      // `acp` and `web` over the same user data): the recorded profileName is
+      // informational, never a cross-profile provisioning conflict.
       if (resolve(recorded.manifest.workspaceDir) !== resolvedWorkspace) {
         conflicts.push(`workspaceDir ${JSON.stringify(recorded.manifest.workspaceDir)}`)
       }

@@ -1,15 +1,15 @@
 ---
-description: "租户平台的 Docker Compose 部署：一个平台容器（BFF + 编排器 + 构建好的 dsh）、TLS 网关、持久数据卷，以及可选的每租户子进程 bwrap 隔离包装。"
+description: "多租户平台的 Docker Compose 部署：一个平台容器（BFF + 编排器 + 构建好的 dsh）、TLS 网关、持久数据卷，以及可选的每用户子进程 bwrap 隔离包装。"
 kind: "package-deploy"
 ---
 
-# 租户平台部署（Docker Compose）
+# 多租户平台部署（Docker Compose）
 
 [English](README.md) | 中文
 
 ## 摘要
 
-内网两个容器：`platform`（BFF、编排器、门户与构建好的 dsh 树同镜像——这是刻意设计，见 `packages/platform/` 的架构记录）与 `gateway`（内置 CA 证书的 Caddy TLS 网关）。租户 home、SQLite transcript 与审计表持久化在 `platform-data` 卷。每个租户 ACP 子进程可经 bwrap 隔离包装（`PLATFORM_ISOLATION`）运行在私有 user/PID 命名空间、只读系统树下。
+内网两个容器：`platform`（BFF、编排器、管理控制台与构建好的 dsh 树同镜像——这是刻意设计，见 `packages/platform/` 的架构记录）与 `gateway`（内置 CA 证书的 Caddy TLS 网关）。组织模型为部门下的用户（`PLATFORM_TOKENS` 把令牌映射到 `[deptId, userId, role]`）；每个用户的 home、workspace、SQLite transcript 行与审计记录持久化在 `platform-data` 卷的 `/data/tenants/<deptId>/<userId>` 下。每个用户侧运行时（ACP 子进程，以及 `PLATFORM_WEB=1` 时按需启动、挂载在 `/u/<deptId>/<userId>/` 的原版 `dsh web` UI）可经 bwrap 隔离包装（`PLATFORM_ISOLATION`）运行在私有 user/PID 命名空间、只读系统树下。
 
 ## 使用本部署
 
@@ -17,25 +17,34 @@ kind: "package-deploy"
 cd deploy
 cp .env.example .env        # set PLATFORM_TOKENS and DEEPSEEK_API_KEY
 docker compose up -d --build
-# portal: https://<host>:8443/  (trust Caddy's CA from the caddy-data volume, or bring your own cert)
+# console: https://<host>:8443/  (trust Caddy's CA from the caddy-data volume, or bring your own cert)
 ```
 
 `deploy/.env` 绝不进入镜像（`.dockerignore` 排除了 `.env` 文件）。
 轮换令牌：编辑 `.env` 后重新 `docker compose up -d`。
 
+首次启动时未配置的密钥会自动生成并持久化在数据卷：
+`PLATFORM_MODEL_GATEWAY_SECRET`（存于 `/data/platform-gateway-secret`）与
+初始平台管理员令牌（存于 `/data/platform-admin-token`，同时在容器日志
+打印一次——用它登录控制台，再在 `.env` 中声明正式令牌）。
+
+用户经控制台的“打开我的工作台”链接进入原版 UI（需要 `PLATFORM_WEB=1`
+与 `PLATFORM_PUBLIC_AUTHORITY`，即浏览器访问的 host[:port]）；未开启
+web UI 的成员仍可走 API 通道。
+
 升级平台时上调 `PLATFORM_DSH_VERSION` 会重新锁定租户清单：默认情况下重新
 置备会拒绝版本漂移。要么在兼容升级间保持标记不变，要么在升级部署时设置
-`PLATFORM_FORCE_REPROVISION=true`（否则只能删除 `<tenant>` 数据卷恢复）。
+`PLATFORM_FORCE_REPROVISION=true`（否则只能删除 `<deptId>/<userId>` 数据目录恢复）。
 
-示例 bwrap 包装收敛了跨租户隔离：`{tenantDir}` 占位符按租户解析，
-`--dir` 在沙箱内创建父目录，每个子进程只 bind 自己的树——兄弟租户与
-平台 SQLite 均不可见。剩余共享面：同一网络命名空间与平台代管的模型
-key（见 SECURITY-NOTES 缺口 1）。
+示例 bwrap 包装收敛了跨用户隔离：`{tenantDir}` 占位符按用户解析，
+`--dir` 在沙箱内创建父目录，每个子进程只 bind 自己的树——兄弟用户、
+其他部门与平台 SQLite 均不可见。剩余共享面：同一网络命名空间与
+平台代管的模型 key（见 SECURITY-NOTES 缺口 1）。
 
 ## 理解各部件
 
 - `Dockerfile` — 多阶段：builder 编译整个工作区（官方 Node 镜像自带开发头文件；`gcc` 覆盖原生插件），slim 运行时携带构建产物、生产依赖与 `bwrap`。
-- `server.mjs` — 容器入口：环境变量驱动的 `startPlatformServer` + `composeTenantRuntimeFactory`。
+- `server.mjs` — 容器入口：环境变量驱动的 `startPlatformServer` + `composeTenantRuntimeFactory`/`composeWebRuntimeFactory` 与首启密钥生成。
 - `docker-compose.yml` — 服务、数据卷与内网；网关负责 TLS 与 body 上限（限流需要 Caddy 插件构建）。
 - `Caddyfile` — TLS 终结、反向代理（WebSocket 升级透明透传）与 8MB 请求体上限。
 - 子进程环境是固定的最小集合（`PATH`、`HOME`、`DSH_HOME`、遥测关闭、模型 key）——BFF 自身的秘密绝不进入租户子进程；wrapper e2e 锁定了这一点。

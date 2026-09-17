@@ -6,7 +6,9 @@ import { startMockLlmServer, type MockLlmServer } from '@deepseek-ai/dsh-llm-moc
 import { composeTenantRuntimeFactory } from '../src/compose.ts'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
-import { devTokenAuthenticator } from '../src/auth.ts'
+import { devTokenAuthenticator, type DevTokenIdentity } from '../src/auth.ts'
+
+const ident = (userId: string, deptId = 'core'): DevTokenIdentity => ({ deptId, userId, role: 'member' })
 import { messageText, startPlatformServer, type PlatformServer } from '../src/index.ts'
 
 /**
@@ -37,7 +39,7 @@ async function startBff(server0: MockLlmServer): Promise<PlatformServer> {
   const tenantsRoot = mkdtempSync(join(tmpdir(), 'dsh-bff-tenants-'))
   cleanupFns.push(() => { rmSync(tenantsRoot, { recursive: true, force: true }) })
   const platform = await startPlatformServer({
-    authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha'], [TOKEN_B, 'beta']])),
+    authenticator: devTokenAuthenticator(new Map([[TOKEN_A, ident('alpha')], [TOKEN_B, ident('beta')]])),
     createRuntime: composeTenantRuntimeFactory({
       tenantsRoot,
       dshBin,
@@ -77,7 +79,7 @@ describe('model gateway over a real spawned runtime', () => {
     const tenantsRoot = mkdtempSync(join(tmpdir(), 'dsh-bff-gw-'))
     cleanupFns.push(() => { rmSync(tenantsRoot, { recursive: true, force: true }) })
     const platform = await startPlatformServer({
-      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha']])),
+      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, ident('alpha')]])),
       createRuntime: composeTenantRuntimeFactory({
         tenantsRoot,
         dshBin,
@@ -129,7 +131,7 @@ describe('platform BFF over real spawned runtimes', () => {
     expect(page.status).toBe(200)
     expect(page.headers.get('content-type')).toContain('text/html')
     const html = await page.text()
-    expect(html).toContain('租户会话')
+    expect(html).toContain('管理控制台')
     expect(html).toContain('portal.js')
     const script = await fetch(`http://127.0.0.1:${platform.port}/portal.js`)
     expect(script.status).toBe(200)
@@ -215,7 +217,7 @@ describe('platform BFF over real spawned runtimes', () => {
     process.env.PLATFORM_CANARY_SECRET = 'leak-me-not'
     process.env.LANG = 'C.UTF-8'
     const platform = await startPlatformServer({
-      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha']])),
+      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, ident('alpha')]])),
       createRuntime: composeTenantRuntimeFactory({
         tenantsRoot,
         dshBin,
@@ -246,7 +248,7 @@ describe('platform BFF over real spawned runtimes', () => {
       }
       // The wrapper ran first, then the real command after its own argv; the
       // {tenantDir} placeholder resolved to this tenant's own directory.
-      expect(dump.argv.slice(0, 1)).toEqual([`bound=${join(tenantsRoot, 'alpha')}`])
+      expect(dump.argv.slice(0, 1)).toEqual([`bound=${join(tenantsRoot, 'core', 'alpha')}`])
       expect(dump.argv.slice(1)).toEqual([process.execPath, dshBin, '--profile', 'acp'])
       // The child environment is exactly the minimal compose set — no canary,
       // no ambient BFF variables leaking in with the injected key.

@@ -109,28 +109,28 @@
 ## Steps
 
 ### 里程碑 1：部门 / 用户复合身份与三级角色鉴权
-- [ ] 1.1 扩展 `auth.ts` 的 `TenantPrincipal`，支持 `deptId`, `userId`, `role: 'member' | 'dept-admin' | 'platform-admin'`。
-- [ ] 1.2 升级 `compose.ts` 与 `tenant-profile`，支持 `${deptId}/${userId}` 两级目录结构与 `{tenantDir}` 安全路径解析。
-- [ ] 1.3 升级用量与审计服务，支持按部门归集、按用户下钻查询；编写单元测试。
+- [x] 1.1 扩展 `auth.ts` 的 `TenantPrincipal`，支持 `deptId`, `userId`, `role: 'member' | 'dept-admin' | 'platform-admin'`。
+- [x] 1.2 升级 `compose.ts` 与 `tenant-profile`，支持 `${deptId}/${userId}` 两级目录结构与 `{tenantDir}` 安全路径解析。
+- [x] 1.3 升级用量与审计服务，支持按部门归集、按用户下钻查询；编写单元测试。（`transcript.deptUsage`/`deptAuditTrail` + `transcript.spec.ts`；模型网关 token 拆分 `tenant=deptId, user=userId`，审计落到复合键）
 
 ### 里程碑 2：客户端 Base-Path 相对化适配（支持子路径反代）
-- [ ] 2.1 调整 `packages/client/connection/src/client/rpc.ts` 与 `api-path.ts`，基于 `document.baseURI` 构建 API 请求。
-- [ ] 2.2 调整 `packages/api/gateway/src/client/stream-client.ts`，基于 `document.baseURI` 构建 `remote.mux` WebSocket 连接。
-- [ ] 2.3 验证单机默认 `dsh web` 本地体验不受影响（全量单测 + 回归检查）。
+- [x] 2.1 调整 `packages/client/connection/src/client/rpc.ts` 与 `api-path.ts`，基于 `document.baseURI` 构建 API 请求。
+- [x] 2.2 调整 `packages/api/gateway/src/client/stream-client.ts`，基于 `document.baseURI` 构建 `remote.mux` WebSocket 连接。
+- [x] 2.3 验证单机默认 `dsh web` 本地体验不受影响（全量单测 + 回归检查）。（connection/gateway 共 467 测试全绿 + 新增 `base-path.client.spec.ts` 与 gateway 子路径用例）
 
 ### 里程碑 3：用户侧原版 `dsh web` 沙箱按需管理器与动态反代
-- [ ] 3.1 实现 `WebRuntimeManager`：为每个 `(deptId, userId)` 按需以 bwrap 隔离启动 `dsh web`，分配本地端口与空闲回收。
-- [ ] 3.2 实现 `web-proxy.ts`：在 BFF 挂载 `/u/:dept/:user/`，实现 HTML `<base href>` 动态改写、静态资源透传、HTTP/WS 反代。
-- [ ] 3.3 注入平台模型网关配置（`DEEPSEEK_BASE_URL` 指向内部网关，注入签名 Model Token）。
-- [ ] 3.4 编写 E2E 测试：通过子路径访问原版 UI，完成设置变更、模型选择与完整会话交互。
+- [x] 3.1 实现 `WebRuntimeManager`：为每个 `(deptId, userId)` 按需以 bwrap 隔离启动 `dsh web`，分配本地端口与空闲回收。（就绪信号 = Loader 沉淀后的 `dsh web:` 公告行，避免路由未挂载的 404 窗口）
+- [x] 3.2 实现 `web-proxy.ts`：在 BFF 挂载 `/u/:dept/:user/`，实现 HTML `<base href>` 动态改写、静态资源透传、HTTP/WS 反代。（含平台会话 cookie、子进程 dsh-auth cookie 的 Path 收窄改写、Host 透传）
+- [x] 3.3 注入平台模型网关配置（`DEEPSEEK_BASE_URL` 指向内部网关，注入签名 Model Token）。（与 ACP 工厂共享 `prepareTenantSandbox`，注入路径已被 bff.e2e 模型网关用例锁定）
+- [x] 3.4 编写 E2E 测试：通过子路径访问原版 UI，完成设置变更、模型选择与完整会话交互。（`bff-web.e2e.ts`：真实 `dsh web` 子进程的 launch-token 舞蹈、base 改写、静态资产与 remote.mux 隧道；完整浏览器会话交互属远程验收 5.3）
 
 ### 里程碑 4：管理控制台（Admin Console）与部门管理
-- [ ] 4.1 改造现有的自建门户，增加按角色渲染逻辑（普通成员直接引导进入个人原版 UI）。
-- [ ] 4.2 实现部门管理员（`dept-admin`）专属视图：本部门成员查看、Token 查看、部门用量报表、审计流。
-- [ ] 4.3 实现平台管理员（`platform-admin`）全局视图：全量部门汇总、系统并发与健康状态。
+- [x] 4.1 改造现有的自建门户，增加按角色渲染逻辑（普通成员直接引导进入个人原版 UI）。（`/api/whoami` + 角色视图；成员视图直接给 `?ptoken=` 链接）
+- [x] 4.2 实现部门管理员（`dept-admin`）专属视图：本部门成员查看、Token 查看、部门用量报表、审计流。（成员/用量/审计三段视图；Token 停发即从 `PLATFORM_TOKENS` 移除后重启，令牌本身不入库）
+- [x] 4.3 实现平台管理员（`platform-admin`）全局视图：全量部门汇总、系统并发与健康状态。（`/api/admin/overview`：部门表 + ACP/Web 运行时水位，可下钻任意部门）
 
 ### 里程碑 5：部署自动化与远程构建验证
-- [ ] 5.1 在 `deploy/` 中增加首次启动自动生成密钥脚本（Bootstrap Secret Generation）。
+- [x] 5.1 在 `deploy/` 中增加首次启动自动生成密钥脚本（Bootstrap Secret Generation）。（`server.mjs` 首启生成并持久化 `platform-gateway-secret` 与管理员 token，日志公告一次）
 - [ ] 5.2 使用构建服务器 `ssh -p 2225 root@192.168.28.165` 进行远程镜像构建，并就地部署升级。
 - [ ] 5.3 远程真机验收：两个部门各两个用户的完整原版 UI 操作、权限预设设置、跨部门与跨用户隔离性实测。
 

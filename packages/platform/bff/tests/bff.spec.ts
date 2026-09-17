@@ -3,7 +3,9 @@ import { randomBytes } from 'node:crypto'
 import { connect as netConnect, type Socket as netSocket } from 'node:net'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import WebSocket from 'ws'
-import { devTokenAuthenticator } from '../src/auth.ts'
+import { devTokenAuthenticator, type DevTokenIdentity } from '../src/auth.ts'
+
+const ident = (userId: string, deptId = 'core'): DevTokenIdentity => ({ deptId, userId, role: 'member' })
 import { startPlatformServer } from '../src/index.ts'
 import { messageText, type PlatformServer } from '../src/index.ts'
 import type { TenantRuntime } from '@deepseek-ai/dsh-orchestrator'
@@ -70,7 +72,7 @@ afterEach(async () => {
 
 async function startServer(hub: FakeRuntimeHub, options: { permissionTimeoutMs?: number } = {}): Promise<PlatformServer> {
   const server = await startPlatformServer({
-    authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha'], [TOKEN_B, 'beta']])),
+    authenticator: devTokenAuthenticator(new Map([[TOKEN_A, ident('alpha')], [TOKEN_B, ident('beta')]])),
     createRuntime: fakeRuntimeFactory(hub),
     ...(options.permissionTimeoutMs === undefined ? {} : { permissionTimeoutMs: options.permissionTimeoutMs }),
   })
@@ -97,7 +99,7 @@ describe('platform BFF', () => {
     const calls: string[] = []
     const resumed: unknown[] = []
     const server = await startPlatformServer({
-      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha'], [TOKEN_B, 'beta']])),
+      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, ident('alpha')], [TOKEN_B, ident('beta')]])),
       createRuntime: async tenantId => ({
         tenantId,
         request: async <T>(method: string, params: unknown): Promise<T> => {
@@ -142,7 +144,7 @@ describe('platform BFF', () => {
     // working instead of poisoning the registry with an empty string.
     const calls: string[] = []
     const server = await startPlatformServer({
-      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha'], [TOKEN_B, 'beta']])),
+      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, ident('alpha')], [TOKEN_B, ident('beta')]])),
       createRuntime: async tenantId => ({
         tenantId,
         request: async <T>(method: string): Promise<T> => {
@@ -181,7 +183,7 @@ describe('platform BFF', () => {
     // Rows written by the pre-fix build carry cwd:''; the upsert must now
     // rewrite cwd so the authoritative value from a successful resume wins.
     const server = await startPlatformServer({
-      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha'], [TOKEN_B, 'beta']])),
+      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, ident('alpha')], [TOKEN_B, ident('beta')]])),
       createRuntime: async tenantId => ({
         tenantId,
         request: async <T>(method: string): Promise<T> => {
@@ -211,7 +213,7 @@ describe('platform BFF', () => {
 
   it('answers 404 on the explicit resume route when the session is gone', async () => {
     const server = await startPlatformServer({
-      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha'], [TOKEN_B, 'beta']])),
+      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, ident('alpha')], [TOKEN_B, ident('beta')]])),
       createRuntime: async tenantId => ({
         tenantId,
         request: async <T>(method: string): Promise<T> => {
@@ -234,7 +236,7 @@ describe('platform BFF', () => {
 
   it('answers 404 when the registry references a session the runtime no longer has', async () => {
     const server = await startPlatformServer({
-      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha'], [TOKEN_B, 'beta']])),
+      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, ident('alpha')], [TOKEN_B, ident('beta')]])),
       createRuntime: async tenantId => ({
         tenantId,
         request: async <T>(method: string): Promise<T> => {
@@ -263,7 +265,7 @@ describe('platform BFF', () => {
     let resumeCount = 0
     let failOnce = true
     const server = await startPlatformServer({
-      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha'], [TOKEN_B, 'beta']])),
+      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, ident('alpha')], [TOKEN_B, ident('beta')]])),
       createRuntime: async tenantId => ({
         tenantId,
         request: async <T>(method: string): Promise<T> => {
@@ -503,7 +505,7 @@ describe('platform BFF', () => {
   it('aggregates usage from the update stream and keeps an audit trail', async () => {
     const hub = new FakeRuntimeHub()
     const server = await startPlatformServer({
-      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha'], [TOKEN_B, 'beta']])),
+      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, ident('alpha')], [TOKEN_B, ident('beta')]])),
       createRuntime: async tenantId => ({
         tenantId,
         request: async <T>(method: string): Promise<T> => {
