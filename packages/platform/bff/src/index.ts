@@ -179,23 +179,33 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
         // The runtime may have been reaped since this session last ran: ACP
         // prompts only work on open sessions, so re-open (resume) first and
         // treat "already active" as success. The registry's cwd is what
-        // resume must repeat.
+        // resume must repeat. One withTenant covers both calls so an eager
+        // eviction cannot spawn a fresh runtime between them.
         const cwd = transcript.sessionCwd(tenantId, sessionId)
         if (cwd !== undefined) {
-          await manager.withTenant(tenantId, async (runtime) => {
-            try {
-              await runtime.request('session/resume', { sessionId, cwd, mcpServers: [] })
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error)
-              if (!message.includes('already active')) throw error
+          try {
+            await manager.withTenant(tenantId, async (runtime) => {
+              try {
+                await runtime.request('session/resume', { sessionId, cwd, mcpServers: [] })
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                if (!message.includes('already active')) throw error
+              }
+            })
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            if (message.includes('not resumable')) {
+              json(response, 404, { error: 'session no longer exists on this tenant runtime' })
+              return
             }
-          })
+            throw error
+          }
         }
         const result = await manager.withTenant(tenantId, runtime => runtime.request('session/prompt', {
           sessionId,
           prompt: [{ type: 'text', text: body.text }],
         }))
-        transcript.registerSession(tenantId, sessionId, cwd ?? '')
+        if (cwd !== undefined) transcript.registerSession(tenantId, sessionId, cwd)
         transcript.audit(tenantId, 'session-prompt', `${sessionId} stop=${(result as { stopReason?: string }).stopReason ?? '?'}`)
         json(response, 200, result)
         return
@@ -218,6 +228,7 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
           cwd,
           mcpServers: [],
         }))
+        transcript.registerSession(tenantId, sessionId, cwd)
         json(response, 200, result)
         return
       }
@@ -238,9 +249,12 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
       // Provider rate limits deserve a tenant-actionable answer; everything
       // else stays generic (internal errors can carry paths and spawn
       // diagnostics no tenant should see).
+      // ponytail: message regex is the only lever here - the ACP bridge
+      // flattens structured error codes into strings; the durable fix is
+      // bridging the provider code through RequestError data.
       const message = error instanceof Error ? error.message : String(error)
       if (/rate.?limit|tpm.rpm|exceeds tpm|insufficient quota/i.test(message)) {
-        json(response, 429, { error: 'model provider rate limited; retry in a minute' })
+        json(response, 429, { error: 'model provider rate limited or out of quota' })
         return
       }
       console.error('[platform-bff] request failed:', error)

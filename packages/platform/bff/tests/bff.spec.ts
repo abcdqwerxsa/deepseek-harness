@@ -136,6 +136,74 @@ describe('platform BFF', () => {
     expect(calls.slice(0, 3)).toEqual(['session/new', 'session/resume', 'session/prompt'])
   })
 
+  it('registers the authoritative cwd on explicit resume and keeps prompting', async () => {
+    // Legacy sessions (created before the registry existed) enter through the
+    // documented resume route; the recorded cwd must keep later prompts
+    // working instead of poisoning the registry with an empty string.
+    const calls: string[] = []
+    const server = await startPlatformServer({
+      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha'], [TOKEN_B, 'beta']])),
+      createRuntime: async tenantId => ({
+        tenantId,
+        request: async <T>(method: string): Promise<T> => {
+          calls.push(method)
+          if (method === 'session/resume') return {} as T
+          if (method === 'session/prompt') return { stopReason: 'end_turn' } as T
+          if (method === 'session/close') return {} as T
+          if (method === 'session/list') return { sessions: [] } as T
+          if (method === 'session/new') return { sessionId: 'unused' } as T
+          throw new Error(`spec fake: ${method}`)
+        },
+        onUpdate: () => () => {},
+        onPermission: () => {},
+        get lastUsedAt(): number {
+          return Date.now()
+        },
+        dispose: async () => {},
+        exited: () => new Promise<void>(() => {}),
+      }),
+    })
+    cleanupFns.push(() => server.close())
+
+    // Legacy flow: explicit resume with the real cwd, then two prompts.
+    await api(server, TOKEN_A, '/api/session/sess-legacy/resume', { method: 'POST', body: JSON.stringify({ cwd: '/ws/legacy' }) })
+    expect((await api(server, TOKEN_A, '/api/session/sess-legacy/prompt', { method: 'POST', body: JSON.stringify({ text: 'one' }) })).status).toBe(200)
+    expect((await api(server, TOKEN_A, '/api/session/sess-legacy/prompt', { method: 'POST', body: JSON.stringify({ text: 'two' }) })).status).toBe(200)
+
+    const registered = await (await api(server, TOKEN_A, '/api/sessions')).json() as { sessions: { sessionId: string; cwd: string }[] }
+    const entry = registered.sessions.find(item => item.sessionId === 'sess-legacy')
+    expect(entry?.cwd).toBe('/ws/legacy')
+    // Both prompts auto-resumed with the registered cwd, never an empty one.
+    expect(calls.filter(method => method === 'session/resume')).toHaveLength(3)
+  })
+
+  it('answers 404 when the registry references a session the runtime no longer has', async () => {
+    const server = await startPlatformServer({
+      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, 'alpha'], [TOKEN_B, 'beta']])),
+      createRuntime: async tenantId => ({
+        tenantId,
+        request: async <T>(method: string): Promise<T> => {
+          if (method === 'session/resume') throw new Error('session is not resumable: gone')
+          if (method === 'session/new') return { sessionId: 'sess-gone' } as T
+          if (method === 'session/prompt') return { stopReason: 'end_turn' } as T
+          throw new Error(`spec fake: ${method}`)
+        },
+        onUpdate: () => () => {},
+        onPermission: () => {},
+        get lastUsedAt(): number {
+          return Date.now()
+        },
+        dispose: async () => {},
+        exited: () => new Promise<void>(() => {}),
+      }),
+    })
+    cleanupFns.push(() => server.close())
+    await api(server, TOKEN_A, '/api/session/new', { method: 'POST', body: JSON.stringify({ cwd: '/ws/alpha' }) })
+
+    const gone = await api(server, TOKEN_A, '/api/session/sess-gone/prompt', { method: 'POST', body: JSON.stringify({ text: 'hi' }) })
+    expect(gone.status).toBe(404)
+  })
+
   it('tolerates already-active on the auto-resume path and maps rate limits to 429', async () => {
     let resumeCount = 0
     let failOnce = true
@@ -173,7 +241,7 @@ describe('platform BFF', () => {
 
     const limited = await api(server, TOKEN_A, '/api/session/sess-rl/prompt', { method: 'POST', body: JSON.stringify({ text: 'hi' }) })
     expect(limited.status).toBe(429)
-    expect(await limited.json()).toEqual({ error: 'model provider rate limited; retry in a minute' })
+    expect(await limited.json()).toEqual({ error: 'model provider rate limited or out of quota' })
 
     const recovered = await api(server, TOKEN_A, '/api/session/sess-rl/prompt', { method: 'POST', body: JSON.stringify({ text: 'hi' }) })
     expect(recovered.status).toBe(200)

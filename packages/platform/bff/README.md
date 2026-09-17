@@ -53,7 +53,6 @@ table lives in the same SQLite file; operational access is direct SQL.
 
 ## Known Limitations and Deferred Work
 
-- Listing sessions spawns the tenant runtime on demand (`session/list` reads the profile persistence root through a live process); a direct persistence reader would avoid the cold start.
 - No CORS, rate limiting, or request body size caps yet — the internal gateway in front owns those.
 - A spawned-process `request_permission` e2e is still deferred (needs per-call tool arguments in the mock LLM server); BFF forwarding logic is locked by fake-runtime tests and a full portal-drive JSDOM spec.
 - The portal renders `agent_message_chunk` text and one-line summaries of other update kinds; rich tool-call rendering and ui-* component reuse are M3+ polish.

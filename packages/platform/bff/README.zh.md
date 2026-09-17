@@ -52,7 +52,6 @@ console.log(`platform listening on ${platform.port}`)
 
 ## 已知限制与延后工作
 
-- 列会话会按需 spawn 该租户的运行时（`session/list` 经活进程读 profile 持久化根）；直读持久化可避免这次冷启动。
 - 尚无 CORS、限流或请求体大小上限——由前置内网网关负责。
 - spawn 进程级的 `request_permission` e2e 仍延后（需 mock LLM server 支持按调用序的 tool arguments）；BFF 转发逻辑已由 fake-runtime 测试与完整驱动门户的 JSDOM spec 锁定。
 - 门户渲染 `agent_message_chunk` 文本与其他更新种类的单行摘要；富工具调用渲染与 ui-* 组件复用是 M3+ 打磨项。
