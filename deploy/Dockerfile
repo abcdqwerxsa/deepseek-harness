@@ -23,6 +23,7 @@ ENV CI=true
 # Heavy layer keyed ONLY to the lockfile: pnpm fetch fills the store without
 # any workspace manifests, so source edits never re-download dependencies.
 COPY pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches ./patches
 RUN pnpm fetch
 # Source layer: installs from the fetched store (postinstall scripts are in
 # the tree by now) and builds.
