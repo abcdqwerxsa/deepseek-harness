@@ -182,29 +182,21 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
         // resume must repeat. One withTenant covers both calls so an eager
         // eviction cannot spawn a fresh runtime between them.
         const cwd = transcript.sessionCwd(tenantId, sessionId)
-        if (cwd !== undefined) {
-          try {
-            await manager.withTenant(tenantId, async (runtime) => {
-              try {
-                await runtime.request('session/resume', { sessionId, cwd, mcpServers: [] })
-              } catch (error) {
-                const message = error instanceof Error ? error.message : String(error)
-                if (!message.includes('already active')) throw error
-              }
-            })
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            if (message.includes('not resumable')) {
-              json(response, 404, { error: 'session no longer exists on this tenant runtime' })
-              return
+        const result = await manager.withTenant(tenantId, async (runtime) => {
+          if (cwd !== undefined) {
+            try {
+              await runtime.request('session/resume', { sessionId, cwd, mcpServers: [] })
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error)
+              if (message.includes('not resumable')) throw new SessionGoneError(sessionId)
+              if (!message.includes('already active')) throw error
             }
-            throw error
           }
-        }
-        const result = await manager.withTenant(tenantId, runtime => runtime.request('session/prompt', {
-          sessionId,
-          prompt: [{ type: 'text', text: body.text }],
-        }))
+          return runtime.request('session/prompt', {
+            sessionId,
+            prompt: [{ type: 'text', text: body.text }],
+          })
+        })
         if (cwd !== undefined) transcript.registerSession(tenantId, sessionId, cwd)
         transcript.audit(tenantId, 'session-prompt', `${sessionId} stop=${(result as { stopReason?: string }).stopReason ?? '?'}`)
         json(response, 200, result)
@@ -244,6 +236,10 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
     void handle(request, response).catch((error: unknown) => {
       if (error instanceof InvalidJsonBodyError) {
         json(response, 400, { error: 'invalid json' })
+        return
+      }
+      if (error instanceof SessionGoneError) {
+        json(response, 404, { error: 'session no longer exists on this tenant runtime' })
         return
       }
       // Provider rate limits deserve a tenant-actionable answer; everything
@@ -375,6 +371,9 @@ export function messageText(data: unknown): string {
 }
 
 class InvalidJsonBodyError extends Error {}
+
+/** The registry references a session the tenant runtime no longer has. */
+class SessionGoneError extends Error {}
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = []
