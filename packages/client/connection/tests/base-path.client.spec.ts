@@ -14,7 +14,7 @@ afterEach(() => {
 })
 
 function echoFetch(): { mock: ReturnType<typeof vi.fn>; rpc: ReturnType<typeof createWebConnectionRpc> } {
-  const fn = vi.fn(async (input: URL, init: RequestInit) => {
+  const fn = vi.fn(async (_input: URL, init: RequestInit) => {
     const body = JSON.parse(String(init.body)) as { rpcId: string }
     return {
       ok: true,
