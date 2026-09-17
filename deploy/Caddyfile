@@ -1,12 +1,16 @@
 # Internal-network TLS termination with Caddy's built-in CA; point tenants at
-# https://<host>:8443 and trust the CA cert from caddy-data (or bring your own
-# cert pair and replace the `tls internal` line).
+# https://<host>:8443 (the browser trusts the internal CA once imported from
+# the caddy-data volume, or bring your own cert pair and replace the
+# `tls internal` block). On-demand issuance covers IP and ad-hoc names used
+# on an intranet without a fixed hostname.
 {
   admin off
 }
 
 :443 {
-  tls internal
+  tls internal {
+    on_demand
+  }
   encode zstd gzip
   request_body {
     max_size 8MB
