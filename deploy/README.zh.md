@@ -44,4 +44,5 @@ key（见 SECURITY-NOTES 缺口 1）。
 
 - 刻意单机；横向扩展需先做租户亲和路由（`TenantRuntime` 接缝已就绪）。
 - 示例 bwrap 行映射私有 `/tmp`、只读 `/app`/`/usr`/`/etc`，并经 `{tenantDir}` 占位符做每租户 bind；启用需要更宽文件系统访问的工具前请先审查挂载。
+- 沙箱内没有 `/proc`：`ps`/`top`/`free` 与进程替换 `<(cmd)` 不可用，租户工具约束依赖 Landlock launcher（内核 ≥ 5.13；无 Landlock 时租户工具 fail-closed 拒绝执行）。不启用 `PLATFORM_ISOLATION` 时请删掉那两行 `security_opt`，让 BFF 自身保留 Docker 默认 seccomp 过滤。
 - Caddy 内置 CA 是内网便利项；生产 PKI 应替换之。

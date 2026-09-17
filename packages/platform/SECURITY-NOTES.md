@@ -40,8 +40,10 @@ manifests, spawn-failure double-acquirer.
    bwrap line binds each child only its own tree (`--dir` parent, own bind,
    private user/PID namespace) — siblings and the platform SQLite are
    invisible, and BFF secrets never reach tenants (e2e-locked). Still shared:
-   one network namespace for all tenants and the platform-held model key
-   injected into each child.
+   one network namespace, SysV/POSIX IPC objects, and the platform-held
+   model key injected into each child. Sandbox-internal tool confinement
+   relies on the Landlock launcher (kernel ≥ 5.13); without it, tenant
+   tools fail closed.
 2. **OIDC is an interface, not an implementation.** Dev tokens are static and
    long-lived; rotate them and front the BFF with the internal TLS gateway.
 3. No CORS/rate-limit/body-size caps — the gateway in front owns these.

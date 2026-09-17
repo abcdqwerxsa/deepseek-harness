@@ -46,4 +46,5 @@ namespace and the platform-held model key (see SECURITY-NOTES gap 1).
 
 - Single-host by design; scale-out needs tenant-affinity routing first (the `TenantRuntime` seam is ready).
 - The example bwrap line maps a private `/tmp`, read-only `/app`/`/usr`/`/etc`, and a per-tenant bind via the `{tenantDir}` placeholder; review mounts before enabling extra tools that need wider filesystem access.
+- Inside the sandbox `/proc` is absent: `ps`/`top`/`free` and process substitution `<(cmd)` do not work, and tenant tool confinement relies on the Landlock launcher (kernel ≥ 5.13; without Landlock, tenant tools fail closed). Drop the two `security_opt` lines when not enabling `PLATFORM_ISOLATION` to keep Docker's default seccomp filtering for the BFF itself.
 - Caddy's internal CA is a convenience for intranets; production PKI should replace it.

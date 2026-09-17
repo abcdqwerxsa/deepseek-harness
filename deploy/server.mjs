@@ -13,6 +13,14 @@ if (!Array.isArray(tokens) || tokens.length === 0) {
   console.error('platform: PLATFORM_TOKENS must be a JSON array of [token, tenantId] pairs')
   process.exit(2)
 }
+// A tenantId becomes a directory name under the tenants root and a read-write
+// bind target inside its sandbox: it must stay a single safe path segment.
+for (const [, tenantId] of tokens) {
+  if (typeof tenantId !== 'string' || tenantId.includes('/') || tenantId.includes('\\') || tenantId.includes('..') || tenantId.includes('\u0000') || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(tenantId)) {
+    console.error('platform: tenant ids must be single safe path segments (letters, digits, dot, dash, underscore)')
+    process.exit(2)
+  }
+}
 
 const isolationRaw = process.env.PLATFORM_ISOLATION
 let isolation
