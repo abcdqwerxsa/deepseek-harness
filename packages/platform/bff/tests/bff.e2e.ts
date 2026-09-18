@@ -263,6 +263,10 @@ describe('platform BFF over real spawned runtimes', () => {
       ])
       expect(dump.env.PLATFORM_CANARY_SECRET).toBeUndefined()
       expect(dump.env.DEEPSEEK_API_KEY).toBe('bff-e2e-key')
+      // HOME anchors at the user's tree root (workspace browser lists both
+      // the dsh home and the workspace directory); DSH_HOME stays the data home.
+      expect(dump.env.HOME).toBe(join(tenantsRoot, 'core', 'alpha'))
+      expect(dump.env.DSH_HOME).toBe(join(tenantsRoot, 'core', 'alpha', 'home'))
     } finally {
       delete process.env.PLATFORM_CANARY_SECRET
       delete process.env.LANG

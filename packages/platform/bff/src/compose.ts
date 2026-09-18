@@ -144,9 +144,12 @@ function prepareTenantSandbox(
   const wrapper = (options.isolationCommand ?? []).map(part => part.replaceAll('{tenantDir}', tenantDir))
   // Deliberately minimal child environment: the tenant child never sees the
   // BFF's own variables (tokens, future secrets) — only what dsh needs.
+  // HOME anchors at the user's tree root (not the dsh data home) so the web
+  // UI's workspace directory browser starts one level up and lists BOTH the
+  // dsh home and the workspace directory; DSH_HOME stays the data home.
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
-    HOME: homeDir,
+    HOME: tenantDir,
     DSH_HOME: homeDir,
     DSH_TELEMETRY_DISABLED: '1',
     DEEPSEEK_API_KEY: options.apiKey,
