@@ -36,6 +36,12 @@ import { composeTenantRuntimeFactory, composeWebRuntimeFactory, devTokenAuthenti
 const identities = new Map(JSON.parse(process.env.PLATFORM_TOKENS ?? '[]').map(
   ([token, deptId, userId, role]) => [token, { deptId, userId, role: role ?? 'member' }],
 ))
+// Required when PLATFORM_WEB=1: fail loudly instead of spawning a child
+// whose /api fence trusts the literal "undefined".
+const publicAuthority = process.env.PLATFORM_PUBLIC_AUTHORITY
+if (process.env.PLATFORM_WEB === '1' && publicAuthority === undefined) {
+  throw new Error('PLATFORM_PUBLIC_AUTHORITY is required when PLATFORM_WEB=1')
+}
 const platform = await startPlatformServer({
   authenticator: devTokenAuthenticator(identities),
   createRuntime: composeTenantRuntimeFactory({
@@ -53,7 +59,7 @@ const platform = await startPlatformServer({
         apiKey: process.env.DEEPSEEK_API_KEY ?? '',
         dshVersion: process.env.PLATFORM_DSH_VERSION ?? 'unpinned',
         baseUrl: process.env.DEEPSEEK_BASE_URL,
-        trustedAuthority: process.env.PLATFORM_PUBLIC_AUTHORITY,
+        trustedAuthority: publicAuthority,
       }),
     },
   } : {}),

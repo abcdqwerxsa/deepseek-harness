@@ -36,6 +36,12 @@ import { composeTenantRuntimeFactory, composeWebRuntimeFactory, devTokenAuthenti
 const identities = new Map(JSON.parse(process.env.PLATFORM_TOKENS ?? '[]').map(
   ([token, deptId, userId, role]) => [token, { deptId, userId, role: role ?? 'member' }],
 ))
+// PLATFORM_WEB=1 时必填：显式失败，而不是 spawn 一个 /api 栅栏
+// 信任字面量 "undefined" 的子进程。
+const publicAuthority = process.env.PLATFORM_PUBLIC_AUTHORITY
+if (process.env.PLATFORM_WEB === '1' && publicAuthority === undefined) {
+  throw new Error('PLATFORM_PUBLIC_AUTHORITY is required when PLATFORM_WEB=1')
+}
 const platform = await startPlatformServer({
   authenticator: devTokenAuthenticator(identities),
   createRuntime: composeTenantRuntimeFactory({
@@ -53,7 +59,7 @@ const platform = await startPlatformServer({
         apiKey: process.env.DEEPSEEK_API_KEY ?? '',
         dshVersion: process.env.PLATFORM_DSH_VERSION ?? 'unpinned',
         baseUrl: process.env.DEEPSEEK_BASE_URL,
-        trustedAuthority: process.env.PLATFORM_PUBLIC_AUTHORITY,
+        trustedAuthority: publicAuthority,
       }),
     },
   } : {}),
