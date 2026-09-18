@@ -115,6 +115,7 @@ const modelGatewayConfig = process.env.PLATFORM_MODEL_GATEWAY === '1'
 
 const platform = await startPlatformServer({
   authenticator: devTokenAuthenticator(identities),
+  tenantsRoot,
   createRuntime: composeTenantRuntimeFactory({
     tenantsRoot,
     dshBin: process.env.PLATFORM_DSH_BIN ?? '/app/apps/cli/lib/bin.js',

@@ -1,5 +1,8 @@
 import { EventEmitter } from 'node:events'
 import { randomBytes } from 'node:crypto'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { connect as netConnect, type Socket as netSocket } from 'node:net'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import WebSocket from 'ws'
@@ -70,11 +73,15 @@ afterEach(async () => {
   while (cleanupFns.length > 0) await cleanupFns.pop()!()
 })
 
-async function startServer(hub: FakeRuntimeHub, options: { permissionTimeoutMs?: number } = {}): Promise<PlatformServer> {
+async function startServer(
+  hub: FakeRuntimeHub,
+  options: { permissionTimeoutMs?: number; tenantsRoot?: string } = {},
+): Promise<PlatformServer> {
   const server = await startPlatformServer({
     authenticator: devTokenAuthenticator(new Map([[TOKEN_A, ident('alpha')], [TOKEN_B, ident('beta')]])),
     createRuntime: fakeRuntimeFactory(hub),
     ...(options.permissionTimeoutMs === undefined ? {} : { permissionTimeoutMs: options.permissionTimeoutMs }),
+    ...(options.tenantsRoot === undefined ? {} : { tenantsRoot: options.tenantsRoot }),
   })
   cleanupFns.push(() => server.close())
   return server
@@ -573,6 +580,51 @@ describe('platform BFF', () => {
 
     await expect(hub.permissionHandler!({ options: [] })).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
   }, 10_000)
+
+  it('serves tenant workspace files safely and bars path traversal over HTTP', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'bff-ws-'))
+    const hub = new FakeRuntimeHub()
+    const server = await startServer(hub, { tenantsRoot: tempDir })
+
+    // 1. Upload a file
+    const uploadRes = await api(server, TOKEN_A, '/api/workspace/upload?path=sales.csv', {
+      method: 'POST',
+      body: 'month,val\nQ1,100\nQ2,200',
+    })
+    expect(uploadRes.status).toBe(200)
+    const uploaded = await uploadRes.json() as { file: { name: string; relativePath: string } }
+    expect(uploaded.file.name).toBe('sales.csv')
+
+    // 2. List files
+    const listRes = await api(server, TOKEN_A, '/api/workspace/files')
+    expect(listRes.status).toBe(200)
+    const list = await listRes.json() as { files: { name: string; relativePath: string }[] }
+    expect(list.files.some(f => f.relativePath === 'sales.csv')).toBe(true)
+
+    // 3. Read file
+    const readRes = await api(server, TOKEN_A, '/api/workspace/file?path=sales.csv')
+    expect(readRes.status).toBe(200)
+    expect(await readRes.text()).toBe('month,val\nQ1,100\nQ2,200')
+
+    // 4. Reject traversal on read
+    const traversalRead = await api(server, TOKEN_A, '/api/workspace/file?path=../other.txt')
+    expect(traversalRead.status).toBe(403)
+
+    // 5. Reject traversal on upload
+    const traversalUpload = await api(server, TOKEN_A, '/api/workspace/upload?path=../../hacked.txt', {
+      method: 'POST',
+      body: 'bad',
+    })
+    expect(traversalUpload.status).toBe(403)
+
+    // 6. Automatic workspace cwd on session/new when omitted
+    const autoSessionRes = await api(server, TOKEN_A, '/api/session/new', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    })
+    expect(autoSessionRes.status).toBe(200)
+    rmSync(tempDir, { recursive: true, force: true })
+  })
 })
 
 afterAll(() => {

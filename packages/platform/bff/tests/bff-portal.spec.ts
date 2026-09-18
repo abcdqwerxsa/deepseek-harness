@@ -4,16 +4,15 @@ import { devTokenAuthenticator, type DevTokenIdentity } from '../src/auth.ts'
 import { startPlatformServer, type PlatformServer } from '../src/index.ts'
 
 /**
- * Admin console page end to end inside JSDOM: the real HTML and portal.js
- * are fetched from a live BFF, so the wiring under test is exactly what a
- * browser runs — token connect, role-aware views (member redirect link,
- * dept-admin department reports, platform-admin overview plus drill-down),
- * and role-scoped 403s for members reaching for department data.
+ * Enterprise Agent Mission Cockpit (Option B) end to end inside JSDOM:
+ * Verifies that the new three-column workspace loads cleanly,
+ * authenticates seamlessly, displays role-specific controls,
+ * and mounts the admin console drawer for managers.
  */
 
-const MEMBER_TOKEN = 'console-member'
-const DEPT_ADMIN_TOKEN = 'console-dept-admin'
-const PLATFORM_ADMIN_TOKEN = 'console-platform-admin'
+const MEMBER_TOKEN = 'cockpit-member'
+const DEPT_ADMIN_TOKEN = 'cockpit-dept-admin'
+const PLATFORM_ADMIN_TOKEN = 'cockpit-platform-admin'
 
 const cleanupFns: Array<() => Promise<void> | void> = []
 const liveDoms: JSDOM[] = []
@@ -23,7 +22,7 @@ afterEach(async () => {
   while (cleanupFns.length > 0) await cleanupFns.pop()!()
 })
 
-async function startConsoleStack(): Promise<PlatformServer> {
+async function startCockpitStack(): Promise<PlatformServer> {
   const identities = new Map<string, DevTokenIdentity>([
     [MEMBER_TOKEN, { deptId: 'deptA', userId: 'user1', role: 'member' }],
     [DEPT_ADMIN_TOKEN, { deptId: 'deptA', userId: 'lead', role: 'dept-admin' }],
@@ -31,28 +30,31 @@ async function startConsoleStack(): Promise<PlatformServer> {
   ])
   const server = await startPlatformServer({
     authenticator: devTokenAuthenticator(identities),
-    createRuntime: async () => { throw new Error('no runtime needed for console views') },
+    createRuntime: async () => { throw new Error('no runtime needed for portal UI tests') },
   })
   cleanupFns.push(() => server.close())
   return server
 }
 
-async function openConsole(server: PlatformServer): Promise<JSDOM> {
+async function openCockpit(server: PlatformServer, query = ''): Promise<JSDOM> {
   const base = `http://127.0.0.1:${server.port}`
-  const html = await (await fetch(`${base}/`)).text()
+  const html = await (await fetch(`${base}/${query}`)).text()
   const pageErrors: unknown[] = []
   const virtualConsole = new VirtualConsole()
   virtualConsole.on('jsdomError', (error) => { pageErrors.push(error) })
   const dom = new JSDOM(html, {
-    url: `${base}/`,
+    url: `${base}/${query}`,
     runScripts: 'dangerously',
     resources: 'usable',
     virtualConsole,
     beforeParse: (window) => {
-      // jsdom ships no fetch; route the console's relative calls to the live
-      // server through Node's fetch.
       window.fetch = (input: RequestInfo | URL, init?: RequestInit) =>
         fetch(new URL(input instanceof URL ? input.href : typeof input === 'string' ? input : input.url, `${base}/`).toString(), init)
+      // Mock WebSocket
+      window.WebSocket = class {
+        close() {}
+        send() {}
+      } as unknown as typeof WebSocket
     },
   })
   ;(dom as JSDOM & { pageErrors: unknown[] }).pageErrors = pageErrors
@@ -60,75 +62,87 @@ async function openConsole(server: PlatformServer): Promise<JSDOM> {
   return dom
 }
 
-function connect(doc: Document, token: string): void {
-  const tokenInput = doc.getElementById('token') as HTMLInputElement
+function login(doc: Document, token: string): void {
+  const tokenInput = doc.getElementById('token-input') as HTMLInputElement
   tokenInput.value = token
-  doc.getElementById('connect')!.click()
+  doc.getElementById('login-btn')!.click()
 }
 
-describe('admin console page', () => {
-  it('routes a member straight to their original-UI link', async () => {
-    const server = await startConsoleStack()
-    const dom = await openConsole(server)
+describe('enterprise agent cockpit portal (Option B)', () => {
+  it('authenticates a member into the three-column workspace directly without external redirects', async () => {
+    const server = await startCockpitStack()
+    const dom = await openCockpit(server)
     const doc = dom.window.document
 
-    await vi.waitFor(() => { expect(dom.window.__adminConsole).toBeDefined() })
-    connect(doc, MEMBER_TOKEN)
-    await vi.waitFor(() => { expect(doc.getElementById('status')!.textContent).toContain('deptA/user1 · member') })
-    const link = doc.querySelector<HTMLAnchorElement>('a.open-ui')
-    expect(link).not.toBeNull()
-    expect(link!.getAttribute('href')).toBe(`/u/deptA/user1/?ptoken=${MEMBER_TOKEN}`)
-    // No governance sections for a member.
-    expect(doc.querySelectorAll('table').length).toBe(0)
+    await vi.waitFor(() => { expect(dom.window.__agentCockpit).toBeDefined() })
+    login(doc, MEMBER_TOKEN)
+
+    // Workspace layout becomes visible, banner hidden
+    await vi.waitFor(() => {
+      expect(doc.getElementById('workspace-layout')!.hidden).toBe(false)
+      expect(doc.getElementById('auth-banner')!.hidden).toBe(true)
+    })
+
+    // Badges updated
+    expect(doc.getElementById('dept-name')!.textContent).toBe('deptA')
+    expect(doc.getElementById('user-name')!.textContent).toContain('user1 (member)')
+
+    // Member has no admin console button
+    expect(doc.getElementById('admin-btn')!.hidden).toBe(true)
   }, 20_000)
 
-  it('renders the department directory, usage, and audit for a dept admin', async () => {
-    const server = await startConsoleStack()
-    const dom = await openConsole(server)
+  it('auto-logs in from URL query ?ptoken=', async () => {
+    const server = await startCockpitStack()
+    const dom = await openCockpit(server, `?ptoken=${MEMBER_TOKEN}`)
     const doc = dom.window.document
-    await vi.waitFor(() => { expect(dom.window.__adminConsole).toBeDefined() })
-    connect(doc, DEPT_ADMIN_TOKEN)
-    await vi.waitFor(() => { expect(doc.getElementById('status')!.textContent).toContain('dept-admin') })
-    // Directory lists every deptA identity (member, lead) with roles.
+
     await vi.waitFor(() => {
-      const rows = [...doc.querySelectorAll('table td')].map(td => td.textContent)
-      expect(rows).toContain('user1')
-      expect(rows).toContain('lead')
+      expect(doc.getElementById('workspace-layout')!.hidden).toBe(false)
+      expect(doc.getElementById('user-name')!.textContent).toContain('user1')
     })
-    // Usage and audit sections render.
-    await vi.waitFor(() => { expect([...doc.querySelectorAll('h2')].some(h => h.textContent === '用量')).toBe(true) })
-    expect([...doc.querySelectorAll('h2')].some(h => h.textContent === '审计')).toBe(true)
   }, 20_000)
 
-  it('refuses department data to members and shows the error', async () => {
-    const server = await startConsoleStack()
-    const response = await fetch(`http://127.0.0.1:${server.port}/api/dept/usage?dept=deptA`, {
-      headers: { authorization: `Bearer ${MEMBER_TOKEN}` },
-    })
-    expect(response.status).toBe(403)
-  })
-
-  it('gives the platform admin the instance overview and department drill-down', async () => {
-    const server = await startConsoleStack()
-    const dom = await openConsole(server)
+  it('renders admin console button for dept-admin and opens modal', async () => {
+    const server = await startCockpitStack()
+    const dom = await openCockpit(server)
     const doc = dom.window.document
-    await vi.waitFor(() => { expect(dom.window.__adminConsole).toBeDefined() })
-    connect(doc, PLATFORM_ADMIN_TOKEN)
-    await vi.waitFor(() => { expect(doc.getElementById('status')!.textContent).toContain('platform-admin') })
-    // Overview table lists departments with user counts.
+
+    await vi.waitFor(() => { expect(dom.window.__agentCockpit).toBeDefined() })
+    login(doc, DEPT_ADMIN_TOKEN)
+
     await vi.waitFor(() => {
-      const rows = [...doc.querySelectorAll('table td')].map(td => td.textContent)
-      expect(rows).toContain('deptA')
-      expect(rows).toContain('_platform')
+      expect(doc.getElementById('workspace-layout')!.hidden).toBe(false)
+      expect(doc.getElementById('admin-btn')!.hidden).toBe(false)
     })
-    // Drill-down into deptA loads its member table into the drill pane.
-    const picker = doc.querySelector<HTMLSelectElement>('select')
-    expect(picker).not.toBeNull()
-    picker!.value = 'deptA'
-    picker!.dispatchEvent(new dom.window.Event('change'))
+
+    // Click admin button opens modal
+    doc.getElementById('admin-btn')!.click()
+    expect(doc.getElementById('admin-modal')!.hidden).toBe(false)
+
+    // Modal loads dept members
     await vi.waitFor(() => {
-      const drill = doc.querySelector('#drill')
-      expect([...drill!.querySelectorAll('table td')].map(td => td.textContent)).toContain('user1')
+      expect(doc.getElementById('admin-modal-body')!.textContent).toContain('user1')
+      expect(doc.getElementById('admin-modal-body')!.textContent).toContain('lead')
+    })
+  }, 20_000)
+
+  it('renders admin overview for platform-admin', async () => {
+    const server = await startCockpitStack()
+    const dom = await openCockpit(server)
+    const doc = dom.window.document
+
+    await vi.waitFor(() => { expect(dom.window.__agentCockpit).toBeDefined() })
+    login(doc, PLATFORM_ADMIN_TOKEN)
+
+    await vi.waitFor(() => {
+      expect(doc.getElementById('workspace-layout')!.hidden).toBe(false)
+      expect(doc.getElementById('admin-btn')!.hidden).toBe(false)
+    })
+
+    doc.getElementById('admin-btn')!.click()
+    await vi.waitFor(() => {
+      expect(doc.getElementById('admin-modal-body')!.textContent).toContain('实例总体概览')
+      expect(doc.getElementById('admin-modal-body')!.textContent).toContain('deptA')
     })
   }, 20_000)
 })

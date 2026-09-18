@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer, type WebSocket } from 'ws'
 import {
@@ -19,6 +19,13 @@ import { TranscriptStore } from './transcript.ts'
 export { composeTenantRuntimeFactory, composeWebRuntimeFactory, type ComposeTenantRuntimeOptions, type ComposeWebRuntimeOptions } from './compose.ts'
 import { mayUseWebUi, mountPrefix, parseUserMount, proxyWebUpgrade, proxyWebRequest } from './web-proxy.ts'
 import { WebRuntimeManager, type WebManagerStats, type WebRuntimeFactory } from '@deepseek-ai/dsh-orchestrator'
+import {
+  getTenantWorkspaceDir,
+  listWorkspaceFiles,
+  readWorkspaceFile,
+  writeWorkspaceFile,
+  PathTraversalError,
+} from './workspace.ts'
 
 /**
  * Thin BFF for the multi-tenant platform: bearer-token tenant auth, ACP REST
@@ -35,6 +42,10 @@ export interface PlatformServerOptions {
   readonly createRuntime: TenantRuntimeFactory
   /** SQLite file for the transcript; defaults to `:memory:`. */
   readonly dbPath?: string
+  /** Root directory for tenant data (defaults to `/data/tenants`). */
+  readonly tenantsRoot?: string
+  /** Default MCP servers injected into every new tenant session. */
+  readonly defaultMcpServers?: readonly unknown[]
   /** Listen host. Default 127.0.0.1 — an internal deployment puts its own gateway in front. */
   readonly host?: string
   /** Listen port; 0 (default) requests an OS-assigned port. */
@@ -82,11 +93,24 @@ interface TenantSockets {
   readonly pending: Map<string, { request: unknown; resolve: (response: unknown) => void; timer: NodeJS.Timeout }>
 }
 
-/** The build-free tenant portal served at `/` (and its script). */
-const PORTAL_FILES: ReadonlyMap<string, readonly [contentType: string, body: string]> = new Map([
-  ['/', ['text/html; charset=utf-8', readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'portal', 'index.html'), 'utf8')]],
-  ['/portal.js', ['text/javascript; charset=utf-8', readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'portal', 'portal.js'), 'utf8')]],
-])
+/** The build-free tenant portal served at `/` (and its scripts/styles). */
+const portalDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'portal')
+function getPortalFile(pathname: string): readonly [contentType: string, body: string] | undefined {
+  try {
+    if (pathname === '/' || pathname === '/index.html') {
+      return ['text/html; charset=utf-8', readFileSync(join(portalDir, 'index.html'), 'utf8')]
+    }
+    if (pathname === '/portal.js') {
+      return ['text/javascript; charset=utf-8', readFileSync(join(portalDir, 'portal.js'), 'utf8')]
+    }
+    if (pathname === '/portal.css') {
+      return ['text/css; charset=utf-8', readFileSync(join(portalDir, 'portal.css'), 'utf8')]
+    }
+  } catch {
+    return undefined
+  }
+  return undefined
+}
 
 export async function startPlatformServer(options: PlatformServerOptions): Promise<PlatformServer> {
   const permissionTimeoutMs = options.permissionTimeoutMs ?? 5 * 60_000
@@ -224,16 +248,103 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
       json(response, 200, { sessions: transcript.listSessions(tenantId) })
       return
     }
-    if (method === 'POST' && segments.length === 3 && segments[1] === 'session' && segments[2] === 'new') {
-      const body = await readJsonBody(request) as { cwd?: string }
-      if (typeof body.cwd !== 'string' || body.cwd === '') {
-        json(response, 400, { error: 'cwd required' })
+    // Workspace File API: list, read, upload within tenant's safe workspace
+    if (segments[1] === 'workspace') {
+      const tenantsRoot = options.tenantsRoot
+      if (tenantsRoot === undefined) {
+        json(response, 501, { error: 'workspace storage not configured' })
         return
       }
-      const cwd = body.cwd
+      let wsDir: string
+      try {
+        wsDir = getTenantWorkspaceDir(tenantsRoot, principal)
+      } catch {
+        json(response, 403, { error: 'forbidden' })
+        return
+      }
+
+      if (method === 'GET' && segments.length === 3 && segments[2] === 'files') {
+        const files = listWorkspaceFiles(wsDir)
+        json(response, 200, { files })
+        return
+      }
+
+      if (method === 'GET' && segments.length === 3 && segments[2] === 'file') {
+        const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
+        const filePath = url.searchParams.get('path')
+        if (!filePath) {
+          json(response, 400, { error: 'path query required' })
+          return
+        }
+        try {
+          const file = readWorkspaceFile(wsDir, filePath)
+          const download = url.searchParams.get('download') === '1'
+          const headers: Record<string, string | number> = {
+            'content-type': file.contentType,
+            'content-length': file.size,
+            'cache-control': 'no-cache',
+          }
+          if (download) {
+            headers['content-disposition'] = `attachment; filename="${encodeURIComponent(basename(filePath))}"`
+          }
+          response.writeHead(200, headers)
+          response.end(file.data)
+          return
+        } catch (err) {
+          if (err instanceof PathTraversalError) {
+            json(response, 403, { error: 'forbidden' })
+            return
+          }
+          json(response, 404, { error: 'file not found' })
+          return
+        }
+      }
+
+      if (method === 'POST' && segments.length === 3 && segments[2] === 'upload') {
+        const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
+        const filePath = url.searchParams.get('path')
+        if (!filePath) {
+          json(response, 400, { error: 'path query required' })
+          return
+        }
+        try {
+          const chunks: Buffer[] = []
+          for await (const chunk of request) chunks.push(chunk as Buffer)
+          const content = Buffer.concat(chunks)
+          const fileInfo = writeWorkspaceFile(wsDir, filePath, content)
+          transcript.audit(tenantId, 'workspace-upload', filePath)
+          json(response, 200, { file: fileInfo })
+          return
+        } catch (err) {
+          if (err instanceof PathTraversalError) {
+            json(response, 403, { error: 'forbidden' })
+            return
+          }
+          json(response, 500, { error: err instanceof Error ? err.message : String(err) })
+          return
+        }
+      }
+    }
+    if (method === 'POST' && segments.length === 3 && segments[1] === 'session' && segments[2] === 'new') {
+      const body = await readJsonBody(request) as { cwd?: string; mcpServers?: unknown[] }
+      let cwd = body.cwd
+      if (typeof cwd !== 'string' || cwd === '') {
+        if (options.tenantsRoot !== undefined) {
+          try {
+            cwd = getTenantWorkspaceDir(options.tenantsRoot, principal)
+          } catch {
+            json(response, 403, { error: 'forbidden' })
+            return
+          }
+        } else {
+          json(response, 400, { error: 'cwd required' })
+          return
+        }
+      }
+      const mcpServers = Array.isArray(body.mcpServers) ? body.mcpServers : (options.defaultMcpServers ?? [])
       const result = await manager.withTenant(tenantId, runtime => runtime.request('session/new', {
         cwd,
-        mcpServers: [],
+        mcpServers,
       }))
       const sessionId = (result as { sessionId?: string }).sessionId ?? ''
       if (sessionId !== '') transcript.registerSession(tenantId, sessionId, cwd)
@@ -407,7 +518,7 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
       return
     }
     if (request.method === 'GET' && url.pathname !== '/api/') {
-      const portalFile = PORTAL_FILES.get(url.pathname)
+      const portalFile = getPortalFile(url.pathname)
       if (portalFile !== undefined) {
         response.writeHead(200, { 'content-type': portalFile[0], 'cache-control': 'no-store' })
         response.end(portalFile[1])
