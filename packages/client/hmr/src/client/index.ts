@@ -170,7 +170,10 @@ export function apply(ctx: Context): void {
   }
 
   ctx.effect(() => {
-    const source = new EventSource(EVENTS_ENDPOINT)
+    // Base-relative like the connection/web-socket callers: a subpath mount
+    // (document <base>) keeps the dev channel under its prefix, while the
+    // standalone root mount resolves back to /plugins/events unchanged.
+    const source = new EventSource(new URL(EVENTS_ENDPOINT.replace(/^\//u, ''), document.baseURI).href)
     source.addEventListener('message', (event: MessageEvent<string>) => {
       let value: unknown
       try {

@@ -205,19 +205,24 @@ function collectUpstream(port: number, request: IncomingMessage, target: string)
 }
 
 /**
- * Point the page's URLs at the subpath mount: single-slash-rooted `src`/
- * `href` values (the dist's own `<base href="/">` anchor plus the webserver-
- * injected `/plugins/...` script rows, which `<base>` cannot rebase because
- * they are root-absolute) each gain the mount prefix, so relative assets,
- * plugin bundles, and the anchor itself all resolve through the proxy. An
- * index with no base tag at all gets one injected after `<head>`.
+ * Point the page's URLs at the subpath mount. Two surfaces carry URLs the
+ * document must resolve through the proxy:
+ * - single-slash-rooted `src`/`href` attributes (the dist's own
+ *   `<base href="/">` anchor plus the webserver-injected `/plugins/...`
+ *   script rows, which `<base>` cannot rebase because they are root-absolute);
+ * - the `__DSH_BOOT__` graph global's "/plugins/..." JSON values: the client
+ *   module system dynamically scripts those URLs, and a root-absolute URL
+ *   ignores `<base>` entirely, so every plugin import would land on the
+ *   gateway root and 404.
+ * An index with no base tag at all gets one injected after `<head>`.
  */
 export function rewriteBase(body: Buffer, prefix: string): Buffer {
   const html = body.toString('utf8')
   const anchor = prefix.endsWith('/') ? prefix.slice(0, -1) : prefix
-  const rewritten = html.replace(/\b(src|href)="\/(?!\/)/g, `$1="${anchor}/`)
-  if (/<base\s/i.test(rewritten)) return Buffer.from(rewritten)
-  const injected = rewritten.replace(/<head(?:\s[^>]*)?>/i, open => `${open}<base href="${prefix}">`)
+  let out = html.replace(/\b(src|href)="\/(?!\/)/g, `$1="${anchor}/`)
+  out = out.replaceAll('"/plugins/', `"${anchor}/plugins/`)
+  if (/<base\s/i.test(out)) return Buffer.from(out)
+  const injected = out.replace(/<head(?:\s[^>]*)?>/i, open => `${open}<base href="${prefix}">`)
   return Buffer.from(injected)
 }
 

@@ -58,7 +58,7 @@ class FakeDshWeb {
         }
         if ((request.headers.cookie ?? '').includes('dsh-auth-demo=')) {
           response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-          response.end('<!doctype html><html lang="en"><head><base href="/"><title>DSH</title><script src="/plugins/??@deepseek-ai/dsh-client-modules/client.js&rev=1"></script></head><body><div id="root"></div></body></html>')
+          response.end('<!doctype html><html lang="en"><head><base href="/"><title>DSH</title><script src="/plugins/??@deepseek-ai/dsh-client-modules/client.js&rev=1"></script><script>globalThis["__DSH_BOOT__"] = {"entries":[{"id":"x","initialUrl":"/plugins/??@deepseek-ai/dsh-client-ui-chat/client.js&rev=1"}]}</script></head><body><div id="root"></div></body></html>')
           return
         }
         response.writeHead(401)
@@ -255,6 +255,9 @@ describe('web proxy child auth dance and base rewrite', () => {
     const html = await index.text()
     expect(html).toContain('<base href="/u/core/alpha/">')
     expect(html).toContain('src="/u/core/alpha/plugins/??@deepseek-ai/dsh-client-modules/client.js&rev=1"')
+    // The boot-graph global's plugin URLs are rebased too: the client module
+    // system dynamically scripts them, and root-absolute URLs ignore <base>.
+    expect(html).toContain('"initialUrl":"/u/core/alpha/plugins/??@deepseek-ai/dsh-client-ui-chat/client.js&rev=1"')
   })
 })
 

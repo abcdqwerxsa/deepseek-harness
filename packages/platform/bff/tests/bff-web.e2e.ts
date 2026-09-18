@@ -101,6 +101,9 @@ describe.skipIf(!ready)('user-side original UI over a real dsh web child', () =>
       expect(html).toContain('<base href="/u/core/alpha/">')
       const pluginSrc = /src="([^"]*\/plugins\/[^"]*)"/.exec(html)?.[1]?.replaceAll('&amp;', '&')
       expect(pluginSrc).toMatch(/^\/u\/core\/alpha\/plugins\//)
+      // The boot graph's plugin URLs are rebased as well — the module system
+      // dynamically scripts them and root-absolute URLs ignore <base>.
+      expect(html).toContain('"initialUrl":"/u/core/alpha/plugins/')
       // The rebased plugin bundle streams through the subpath (prefix
       // stripped) from the real child's /plugins route.
       const bundle = await fetch(`${origin}${pluginSrc ?? ''}`, { headers: { cookie: session } })
