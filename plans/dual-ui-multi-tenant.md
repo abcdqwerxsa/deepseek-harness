@@ -131,8 +131,8 @@
 
 ### 里程碑 5：部署自动化与远程构建验证
 - [x] 5.1 在 `deploy/` 中增加首次启动自动生成密钥脚本（Bootstrap Secret Generation）。（`server.mjs` 首启生成并持久化 `platform-gateway-secret` 与管理员 token，日志公告一次）
-- [ ] 5.2 使用构建服务器 `ssh -p 2225 root@192.168.28.165` 进行远程镜像构建，并就地部署升级。
-- [ ] 5.3 远程真机验收：两个部门各两个用户的完整原版 UI 操作、权限预设设置、跨部门与跨用户隔离性实测。
+- [x] 5.2 使用构建服务器 `ssh -p 2225 root@192.168.28.165` 进行远程镜像构建，并就地部署升级。（.env 迁移到新组织模型；修复 pnpm 11 忽略 npm_config_registry 环境变量的镜像源问题——写入 /root/.npmrc）
+- [x] 5.3 远程真机验收：两个部门各两个用户的完整原版 UI 操作、权限预设设置、跨部门与跨用户隔离性实测。（whoami ×4；跨用户/跨部门/越权部门数据 403；原版 UI 全链路：ptoken 会话 → launch-token 舞蹈 → base 改写 → 资产透传 → remote.mux 101；模型选择 configOptions 与 workspace-write 预设 + fail-closed 审批；bwrap 实测只见本部门本用户、无 /proc、平台 SQLite 不可达；模型网关按用户计量 tokens=7881+346；部门用量/审计聚合；60s 空闲回收 + 771ms 冷启动）
 
 ---
 
