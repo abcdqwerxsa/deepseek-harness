@@ -362,7 +362,8 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
             json(response, 403, { error: 'forbidden' })
             return
           }
-          json(response, 500, { error: err instanceof Error ? err.message : String(err) })
+          console.error('[platform-bff] workspace upload failed:', err)
+          json(response, 500, { error: 'internal error' })
           return
         }
       }
@@ -860,9 +861,19 @@ function sessionCookieHeader(token: string | undefined): string {
   return `${PLATFORM_SESSION_COOKIE}=${token}; Path=/u/; HttpOnly; SameSite=Lax; Max-Age=${String(30 * 24 * 60 * 60)}`
 }
 
+const MAX_JSON_BODY_BYTES = 10 * 1024 * 1024
+
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = []
-  for await (const chunk of request) chunks.push(chunk as Buffer)
+  let totalBytes = 0
+  for await (const chunk of request) {
+    const buf = chunk as Buffer
+    totalBytes += buf.length
+    if (totalBytes > MAX_JSON_BODY_BYTES) {
+      throw new InvalidJsonBodyError('request body exceeds maximum allowed size')
+    }
+    chunks.push(buf)
+  }
   if (chunks.length === 0) return {}
   try {
     return JSON.parse(Buffer.concat(chunks).toString('utf8'))

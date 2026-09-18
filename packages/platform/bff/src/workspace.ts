@@ -71,7 +71,17 @@ export function safeResolveTenantCwd(workspaceDir: string, requestedCwd: string)
   }
 
   // 2. Canonical boundary check
-  if (existsSync(resolved)) {
+  const entryStat = lstatSync(resolved, { throwIfNoEntry: false })
+  if (entryStat !== undefined && entryStat.isSymbolicLink()) {
+    try {
+      const canonical = realpathSync(resolved)
+      if (canonical !== canonicalRoot && !canonical.startsWith(canonicalRoot + sep)) {
+        throw new PathTraversalError(requestedCwd)
+      }
+    } catch {
+      throw new PathTraversalError(requestedCwd)
+    }
+  } else if (existsSync(resolved)) {
     try {
       const canonical = realpathSync(resolved)
       if (canonical !== canonicalRoot && !canonical.startsWith(canonicalRoot + sep)) {
@@ -88,7 +98,7 @@ export function safeResolveTenantCwd(workspaceDir: string, requestedCwd: string)
 /**
  * Resolve a user-supplied relative path against the user's workspace root.
  * Throws `PathTraversalError` if the path escapes the workspace root,
- * whether lexically or via symbolic links.
+ * whether lexically or via symbolic links (including dangling links).
  */
 export function safeResolveWorkspacePath(workspaceDir: string, relativePath: string): string {
   if (relativePath.includes('\u0000')) {
@@ -112,7 +122,18 @@ export function safeResolveWorkspacePath(workspaceDir: string, relativePath: str
     // Root may not exist yet in pure unit tests
   }
 
-  if (existsSync(resolved)) {
+  const resolvedStat = lstatSync(resolved, { throwIfNoEntry: false })
+  if (resolvedStat !== undefined && resolvedStat.isSymbolicLink()) {
+    try {
+      const canonical = realpathSync(resolved)
+      if (canonical !== canonicalRoot && !canonical.startsWith(canonicalRoot + sep)) {
+        throw new PathTraversalError(relativePath)
+      }
+    } catch {
+      // Dangling symlink inside workspace: must not allow traversal
+      throw new PathTraversalError(relativePath)
+    }
+  } else if (existsSync(resolved)) {
     try {
       const canonical = realpathSync(resolved)
       if (canonical !== canonicalRoot && !canonical.startsWith(canonicalRoot + sep)) {
@@ -283,8 +304,9 @@ export function writeWorkspaceFile(
   content: Buffer | Uint8Array,
 ): WorkspaceFileInfo {
   const resolved = safeResolveWorkspacePath(workspaceDir, relativePath)
-  // Refuse overwriting through an existing symlink
-  if (existsSync(resolved) && lstatSync(resolved).isSymbolicLink()) {
+  // Refuse overwriting through any symlink (valid or dangling)
+  const lstat = lstatSync(resolved, { throwIfNoEntry: false })
+  if (lstat !== undefined && lstat.isSymbolicLink()) {
     throw new PathTraversalError(relativePath)
   }
   mkdirSync(resolve(resolved, '..'), { recursive: true })

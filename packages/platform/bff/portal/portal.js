@@ -324,7 +324,14 @@
   }
 
   function finishCurrentTurn() {
-    document.querySelectorAll('.active-thought-card').forEach(e => e.classList.remove('active-thought-card'))
+    document.querySelectorAll('.active-thought-card').forEach((e) => {
+      e.classList.remove('active-thought-card')
+      const badge = e.querySelector('.badge-blue')
+      if (badge) {
+        badge.className = 'badge badge-gray'
+        badge.textContent = '思考完成'
+      }
+    })
     document.querySelectorAll('.active-tools-card').forEach(e => e.classList.remove('active-tools-card'))
     document.querySelectorAll('.active-agent-body').forEach(e => e.classList.remove('active-agent-body'))
     state.currentThoughtText = ''
@@ -370,6 +377,10 @@
         } else if (kind === 'agent_thought_chunk') {
           state.currentThoughtText += update.content?.text || ''
           renderThoughtChunk(state.currentThoughtText)
+        } else if (kind === 'tool_call') {
+          renderToolCall(update)
+        } else if (kind === 'tool_call_update') {
+          renderToolCallUpdate(update)
         } else if (kind === 'agent_message_chunk') {
           state.currentAgentText += update.content?.text || ''
           renderAgentChunk(state.currentAgentText)
@@ -385,7 +396,7 @@
     try {
       const res = await api('/api/session/new', {
         method: 'POST',
-        body: JSON.stringify({ cwd: '/workspace' }),
+        body: JSON.stringify({}),
       })
       if (res.sessionId) {
         state.sessions.unshift({ sessionId: res.sessionId, cwd: res.cwd })
@@ -466,11 +477,38 @@
           </div>
         </div>
         <div style="display:flex; gap:4px;">
-          <a class="btn btn-sm" href="/api/workspace/file?path=${encodeURIComponent(file.relativePath)}&download=1" download target="_blank">⬇️</a>
+          <button class="btn btn-sm download-file-btn" title="下载" style="padding:2px 8px;">⬇️</button>
         </div>
       `
+      const dlBtn = card.querySelector('.download-file-btn')
+      if (dlBtn) {
+        dlBtn.addEventListener('click', (e) => {
+          e.stopPropagation()
+          downloadWorkspaceFile(file.relativePath, file.name)
+        })
+      }
       list.appendChild(card)
     })
+  }
+
+  async function downloadWorkspaceFile(relativePath, fileName) {
+    try {
+      const res = await fetch(`/api/workspace/file?path=${encodeURIComponent(relativePath)}&download=1`, {
+        headers: { authorization: `Bearer ${state.token}` },
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = fileName
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (e) {
+      alert('下载文件失败: ' + e.message)
+    }
   }
 
   async function uploadFile(file) {
@@ -531,6 +569,15 @@
             <thead><tr style="border-bottom:1px solid var(--border-subtle);"><th style="text-align:left; padding:6px;">用户</th><th style="padding:6px;">会话</th><th style="padding:6px;">消息</th><th style="padding:6px;">工具调用</th></tr></thead>
             <tbody>${usage.users.map(u => `<tr><td style="padding:6px;">${escapeHtml(u.userId)}</td><td style="text-align:center; padding:6px;">${u.totals.sessions}</td><td style="text-align:center; padding:6px;">${u.totals.messages}</td><td style="text-align:center; padding:6px;">${u.totals.toolCalls}</td></tr>`).join('')}</tbody>
           </table>
+          <h3>最近审计事件</h3>
+          <div style="max-height:140px; overflow-y:auto; font-size:12px; border:1px solid var(--border-subtle); border-radius:6px; padding:6px;">
+            ${(audit.events || []).slice(0, 20).map(ev => `
+              <div style="padding:4px 0; border-bottom:1px solid var(--border-subtle); display:flex; justify-content:space-between;">
+                <span><b>${escapeHtml(ev.userId || '')}</b>: ${escapeHtml(ev.action || '')} ${escapeHtml(ev.detail || '')}</span>
+                <span style="color:var(--text-muted); font-size:11px;">${new Date(ev.timestamp).toLocaleTimeString()}</span>
+              </div>
+            `).join('') || '<div style="color:var(--text-muted); padding:4px;">暂无审计记录</div>'}
+          </div>
         `
       } else if (role === 'platform-admin') {
         const overview = await api('/api/admin/overview')

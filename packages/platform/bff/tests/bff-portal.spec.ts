@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { JSDOM, VirtualConsole } from 'jsdom'
 import { WebSocket as WsWebSocket } from 'ws'
@@ -44,8 +47,10 @@ async function startCockpitStack(hub?: PortalFakeHub): Promise<PlatformServer> {
     [DEPT_ADMIN_TOKEN, { deptId: 'deptA', userId: 'lead', role: 'dept-admin' }],
     [PLATFORM_ADMIN_TOKEN, { deptId: '_platform', userId: 'admin-1', role: 'platform-admin' }],
   ])
+  const tempTenantsRoot = mkdtempSync(join(tmpdir(), 'dsh-portal-tenants-'))
   const server = await startPlatformServer({
     authenticator: devTokenAuthenticator(identities),
+    tenantsRoot: tempTenantsRoot,
     createRuntime: async tenantId => ({
       tenantId,
       request: async <T>(method: string): Promise<T> => {
@@ -65,7 +70,10 @@ async function startCockpitStack(hub?: PortalFakeHub): Promise<PlatformServer> {
       exited: () => new Promise<void>(() => {}),
     }),
   })
-  cleanupFns.push(() => server.close())
+  cleanupFns.push(() => {
+    rmSync(tempTenantsRoot, { recursive: true, force: true })
+    return server.close()
+  })
   return server
 }
 

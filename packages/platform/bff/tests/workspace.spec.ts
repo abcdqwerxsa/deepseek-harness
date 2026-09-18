@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -100,6 +100,15 @@ describe('tenant workspace file safety', () => {
     symlinkSync(wsDir, join(wsDir, 'loop_link'))
     const filesWithLoop = listWorkspaceFiles(wsDir)
     expect(Array.isArray(filesWithLoop)).toBe(true)
+
+    // 5. Dangling symlink pointing outside: read and write must be blocked, never create outside target
+    const targetOutsideNonExistent = join(outsideDir, 'outside_target.txt')
+    symlinkSync(targetOutsideNonExistent, join(wsDir, 'dangling.txt'))
+
+    expect(() => readWorkspaceFile(wsDir, 'dangling.txt')).toThrow(PathTraversalError)
+    expect(() => writeWorkspaceFile(wsDir, 'dangling.txt', Buffer.from('escape', 'utf8'))).toThrow(PathTraversalError)
+    const { existsSync: checkExists } = await import('node:fs')
+    expect(checkExists(targetOutsideNonExistent)).toBe(false)
   })
 
   it('safely resolves and restricts session cwd', () => {
@@ -122,5 +131,10 @@ describe('tenant workspace file safety', () => {
 
     // 5. Null byte is barred
     expect(() => safeResolveTenantCwd(wsDir, 'nested\u0000')).toThrow(PathTraversalError)
+
+    // 6. Dangling symlink cwd is barred
+    const danglingCwd = join(wsDir, 'dangling_sub')
+    symlinkSync('/tmp/nonexistent_escape_dir', danglingCwd)
+    expect(() => safeResolveTenantCwd(wsDir, 'dangling_sub')).toThrow(PathTraversalError)
   })
 })
