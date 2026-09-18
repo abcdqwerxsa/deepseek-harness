@@ -32,5 +32,5 @@ ssh -p "$REMOTE_PORT" "$REMOTE" "
   fi
   cd '$SRC_DIR/deploy' && DSH_CLIENT_COMMIT_HASH='$hash' docker compose build platform
 "
-ssh -p "$REMOTE_PORT" "$REMOTE" "cd /opt/dsh-platform && docker compose up -d"
+ssh -p "$REMOTE_PORT" "$REMOTE" "cd /opt/dsh-platform && docker compose up -d --force-recreate"
 echo "remote stack updated from $hash"
