@@ -105,7 +105,7 @@ export async function spawnWebRuntime(
   // Last stderr tail for spawn-failure diagnostics: a child that dies before
   // readiness must explain itself in the thrown error.
   let stderrTail = ''
-  child.stderr?.on('data', (chunk: Buffer) => {
+  child.stderr.on('data', (chunk: Buffer) => {
     stderrTail = `${stderrTail}${chunk.toString('utf8')}`.slice(-2_000)
   })
   const announced = new Promise<string>((resolve, reject) => {

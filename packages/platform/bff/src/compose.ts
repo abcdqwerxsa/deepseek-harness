@@ -158,6 +158,10 @@ function prepareTenantSandbox(
     // per-user, day-scoped token for the internal endpoint instead. The
     // payload carries the split identity so metering can attribute calls
     // to `deptId/userId`.
+    // ponytail: the fixed 24 h TTL is a known ceiling — a runtime kept
+    // continuously active past it gets 401s from the gateway until idle
+    // reaping respawns it with a fresh token. Raising the TTL or re-signing
+    // on 401 is the upgrade path if long-lived agents become a workflow.
     env.DEEPSEEK_API_KEY = signModelToken(options.modelGateway.secret, deptId, userId)
     env.DEEPSEEK_BASE_URL = options.modelGateway.endpoint
   }

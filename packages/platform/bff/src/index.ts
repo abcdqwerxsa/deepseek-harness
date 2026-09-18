@@ -10,7 +10,7 @@ import {
   type TenantRuntimeFactory,
   type TenantRuntimeManagerOptions,
 } from '@deepseek-ai/dsh-orchestrator'
-import { bearerOf, type Authenticator, type TenantPrincipal } from './auth.ts'
+import { bearerOf, isSafeTenantSegment, type Authenticator, type TenantPrincipal } from './auth.ts'
 import { verifyModelToken } from './model-token.ts'
 
 export { bearerOf, devTokenAuthenticator, type Authenticator, type TenantPrincipal } from './auth.ts'
@@ -433,14 +433,17 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
   }
 
   /** Resolve the platform session for browser-facing /u/ requests. */
-  function sessionPrincipal(request: IncomingMessage, url: URL): TenantPrincipal | undefined {
-    const cookie = readSessionCookie(request)
-    if (cookie !== undefined) {
-      const principal = options.authenticator.authenticateToken(cookie)
-      if (principal !== undefined) return principal
+  function sessionOf(request: IncomingMessage, url: URL): { principal: TenantPrincipal | undefined; cookieAuthenticated: boolean } {
+    const cookieToken = readSessionCookie(request)
+    if (cookieToken !== undefined) {
+      const principal = options.authenticator.authenticateToken(cookieToken)
+      if (principal !== undefined) return { principal, cookieAuthenticated: true }
     }
     const ptoken = url.searchParams.get('ptoken')
-    return ptoken === null ? undefined : options.authenticator.authenticateToken(ptoken)
+    return {
+      principal: ptoken === null ? undefined : options.authenticator.authenticateToken(ptoken),
+      cookieAuthenticated: false,
+    }
   }
 
   async function handleUserMount(
@@ -460,7 +463,7 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
       response.end()
       return
     }
-    const principal = sessionPrincipal(request, url)
+    const { principal, cookieAuthenticated } = sessionOf(request, url)
     if (principal === undefined) {
       const ptoken = url.searchParams.get('ptoken')
       if (ptoken !== null) {
@@ -473,9 +476,11 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
       response.end('unauthorized: open your web UI through the console link (?ptoken=<your token> once)')
       return
     }
-    // First visit through a console link: mint the session cookie and land
-    // clean on the subpath root so relative URLs resolve correctly.
-    if (url.searchParams.has('ptoken') && readSessionCookie(request) === undefined) {
+    // A console link carries the ptoken: mint or rotate the session cookie
+    // whenever the browser's current one is absent OR no longer
+    // authenticates (a revoked token must not wedge the user out of the
+    // re-mint path), then land clean on the subpath root.
+    if (!cookieAuthenticated && url.searchParams.has('ptoken')) {
       response.writeHead(303, {
         location: mountPrefix(mount.deptId, mount.userId),
         'set-cookie': sessionCookieHeader(ptokenValue(url)),
@@ -505,7 +510,7 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
           socket.destroy()
           return
         }
-        const principal = sessionPrincipal(request, url)
+        const principal = sessionOf(request, url).principal
         if (principal === undefined) {
           socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
           socket.destroy()
@@ -628,13 +633,14 @@ class SessionGoneError extends Error {}
 
 /**
  * The department a console request may read: a dept admin's own department,
- * a platform admin's ?dept= selection, or undefined when the caller may not
- * read departments at all (members) or did not name one.
+ * a platform admin's ?dept= selection (still a safe segment — the transcript's
+ * GLOB prefix queries document that invariant), or undefined when the caller
+ * may not read departments at all (members) or named an invalid one.
  */
 function deptScopeOf(request: IncomingMessage, principal: TenantPrincipal): string | undefined {
   if (principal.role === 'platform-admin') {
     const dept = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`).searchParams.get('dept')
-    if (dept === null || dept === '') return undefined
+    if (dept === null || dept === '' || !isSafeTenantSegment(dept)) return undefined
     return dept
   }
   if (principal.role === 'dept-admin') return principal.deptId

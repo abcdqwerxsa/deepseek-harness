@@ -19,6 +19,7 @@ import type { WebRuntime } from '@deepseek-ai/dsh-orchestrator'
 
 const ident = (userId: string, deptId = 'core'): DevTokenIdentity => ({ deptId, userId, role: 'member' })
 const TOKEN_A = 'token-alpha'
+const TOKEN_ADMIN = 'token-platform-admin'
 
 const cleanupFns: Array<() => Promise<void> | void> = []
 
@@ -93,7 +94,10 @@ class FakeDshWeb {
 async function startFakePlatform(): Promise<{ platform: PlatformServer; child: FakeDshWeb }> {
   const child = new FakeDshWeb()
   const platform = await startPlatformServer({
-    authenticator: devTokenAuthenticator(new Map([[TOKEN_A, ident('alpha')]])),
+    authenticator: devTokenAuthenticator(new Map([
+      [TOKEN_A, ident('alpha')],
+      [TOKEN_ADMIN, { deptId: '_platform', userId: 'admin-1', role: 'platform-admin' }],
+    ])),
     createRuntime: async () => { throw new Error('no acp runtime needed') },
     webRuntimes: {
       factory: async (key, port): Promise<WebRuntime> => {
@@ -166,6 +170,30 @@ describe('web proxy platform session', () => {
       await response.text()
     }
   })
+
+  it('re-mints a stale session cookie from a fresh console link', async () => {
+    const { platform } = await startFakePlatform()
+    // The browser holds a cookie whose token no longer authenticates; the
+    // console link's ptoken must rotate it instead of wedging the user.
+    const response = await fetch(`${base(platform)}/u/core/alpha/?ptoken=${TOKEN_A}`, {
+      headers: { cookie: 'dsh-platform-session=revoked-token' },
+      redirect: 'manual',
+    })
+    expect(response.status).toBe(303)
+    expect(cookieValue(cookieJar(response), 'dsh-platform-session')).toBe('dsh-platform-session=token-alpha')
+    await response.text()
+  })
+
+  it('refuses glob-metacharacter department selectors for the platform admin', async () => {
+    const { platform } = await startFakePlatform()
+    for (const dept of ['*', 'dept%']) {
+      const response = await fetch(`${base(platform)}/api/dept/audit?dept=${encodeURIComponent(dept)}`, {
+        headers: { authorization: `Bearer ${TOKEN_ADMIN}` },
+      })
+      expect(response.status).toBe(403)
+      await response.text()
+    }
+  })
 })
 
 describe('web proxy child auth dance and base rewrite', () => {
@@ -230,6 +258,23 @@ describe('web proxy passthrough', () => {
     expect(response.status).toBe(308)
     expect(response.headers.get('location')).toBe('/u/core/alpha/')
     await response.text()
+  })
+
+  it('answers two-segment and malformed mounts with 404, never a 500', async () => {
+    const { platform } = await startFakePlatform()
+    // Encoded segments stay encoded in the WHATWG pathname, so these reach
+    // the server verbatim and must fall out of parseUserMount into the
+    // generic 404 (never a 5xx, never a stack trace).
+    for (const path of ['/u/core/', '/u/core', '/u/co%72e/alpha/', '/u/a..b/c/']) {
+      const response = await fetch(`${base(platform)}${path}`, { headers: { cookie: 'dsh-platform-session=token-alpha' } })
+      expect(response.status).toBe(404)
+      await response.text()
+    }
+    // A deep rest path is a valid own mount: forwarded to the child with
+    // the prefix stripped (the fake echoes the path it saw) — never a 5xx.
+    const deep = await fetch(`${base(platform)}/u/core/alpha/x/y/z?q=1`, { headers: { cookie: 'dsh-platform-session=token-alpha' } })
+    expect(deep.status).toBe(200)
+    expect(await deep.text()).toContain('/x/y/z')
   })
 })
 

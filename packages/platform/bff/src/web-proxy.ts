@@ -2,7 +2,7 @@ import { connect } from 'node:net'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { request as httpRequest } from 'node:http'
 import type { Duplex } from 'node:stream'
-import type { TenantPrincipal } from './auth.ts'
+import { isSafeTenantSegment, type TenantPrincipal } from './auth.ts'
 
 /**
  * Streaming reverse proxy for the user-side original UI: `/u/<dept>/<user>/`
@@ -29,18 +29,14 @@ export function mayUseWebUi(principal: TenantPrincipal, deptId: string, userId: 
 
 /**
  * Split a `/u/<dept>/<user>[/<rest...>]` pathname; undefined when the path is
- * not a syntactically valid user mount (segments must be safe).
+ * not a syntactically valid user mount (both segments must be safe).
  */
 export function parseUserMount(pathname: string): { deptId: string; userId: string; rest: string } | undefined {
   const segments = pathname.split('/').filter(segment => segment !== '')
-  if (segments[0] !== 'u' || segments.length < 2) return undefined
+  if (segments[0] !== 'u' || segments.length < 3) return undefined
   const [, deptId, userId, ...rest] = segments as [string, string, string, ...string[]]
-  if (!isSafeSegment(deptId) || !isSafeSegment(userId)) return undefined
+  if (!isSafeTenantSegment(deptId) || !isSafeTenantSegment(userId)) return undefined
   return { deptId, userId, rest: rest.join('/') }
-}
-
-function isSafeSegment(segment: string): boolean {
-  return /^[A-Za-z0-9_][A-Za-z0-9._-]*$/.test(segment) && !segment.includes('..')
 }
 
 /** The subpath prefix ending in a slash: `/u/<dept>/<user>/`. */

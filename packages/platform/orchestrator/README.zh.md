@@ -9,15 +9,16 @@ kind: "package-library"
 
 ## 摘要
 
-用 `@deepseek-ai/dsh-orchestrator` 承担多租户平台的进程侧职责：每个租户一个 spawn 出来的 `dsh --profile acp` 子进程，首次使用时创建、被引用期间保活、空闲后回收。`TenantRuntimeManager.withTenant(tenantId, work)` 获取该租户的运行时（在 `maxConcurrent` 个存活进程上限之后排队），执行 `work`，然后释放引用。`spawnAcpStdioRuntime` 把一个真实子进程经 ndJson stdio 接成 `TenantRuntime` 接口：请求透传、`session/update` 扇出、至多一个 `session/request_permission` 应答者（缺省 fail-closed 返回 `cancelled`）。
+用 `@deepseek-ai/dsh-orchestrator` 承担多租户平台的进程侧职责：每个用户一个 spawn 出来的 `dsh --profile acp` 子进程，首次使用时创建、被引用期间保活、空闲后回收。`TenantRuntimeManager.withTenant(tenantId, work)` 获取该用户的运行时（在 `maxConcurrent` 个存活进程上限之后排队），执行 `work`，然后释放引用。`spawnAcpStdioRuntime` 把一个真实子进程经 ndJson stdio 接成 `TenantRuntime` 接口：请求透传、`session/update` 扇出、至多一个 `session/request_permission` 应答者（缺省 fail-closed 返回 `cancelled`）。用户侧原版 UI 由 `WebRuntimeManager` + `spawnWebRuntime` 管理：每用户一个沙箱化 `dsh web` 子进程，端口取自固定池；就绪信号是子进程 Loader 沉淀后的 `dsh web: <url>` stdout 公告行（首请求转发前路由已挂载），公告行中的 launch token 供代理铸造 cookie，spawn 失败携带子进程 stderr 尾部，无在途请求或隧道达空闲窗口后回收。
 
 ## 使用本包
 
 - 作为库导入；不能从 `cordis.yml` 挂载。
 - 提供 `createRuntime` 工厂；自带的 stdio 适配器接收完整子进程规格（`command`、`args`、`cwd`、完整 `env`），模型 key 注入因此留在组装层。
-- 同一租户的并发 `withTenant` 共享一次 spawn（按租户的在途去重）；容量槽位同步预留，排队唤醒不会超限。
+- 同一用户的并发 `withTenant` 共享一次 spawn（按键的在途去重）；容量槽位同步预留，排队唤醒不会超限。
 - 队列有压力时，空闲但仍存活的进程会被主动驱逐，而不是让等待者坐满整个空闲窗口；空闲缓存只在无人排队时才有意义。
-- 真实 spawn 覆盖位于 `tests/orchestrator.e2e.ts`（双租户、上限排队、空闲回收）；纯管理器逻辑由快速的 fake-runtime 测试覆盖。
+- `WebRuntimeManager.acquire/release` 按在途请求或打开的 WebSocket 隧道各持一引用；`webRuntimes` 的规模参数（端口池范围、空闲窗口）由平台传入。
+- 真实 spawn 覆盖位于 `tests/orchestrator.e2e.ts`（双租户、上限排队、空闲回收）；web 管理器与真实子进程形态由 `tests/web-runtime.spec.ts` 及 BFF 的真实 `dsh web` e2e 覆盖。
 
 ## 理解实现
 
