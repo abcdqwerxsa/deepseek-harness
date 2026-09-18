@@ -432,18 +432,26 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
     await dispatch(request, response, principal, url.pathname)
   }
 
-  /** Resolve the platform session for browser-facing /u/ requests. */
+  /**
+   * Resolve the platform session for browser-facing /u/ requests. A console
+   * link's ptoken expresses the user's fresh sign-in intent, so when it is
+   * present AND authenticates it wins over any session cookie the browser
+   * still holds — otherwise switching accounts in one browser (an old,
+   * still-valid cookie from another user) would wedge every mount into a
+   * mismatched 403.
+   */
   function sessionOf(request: IncomingMessage, url: URL): { principal: TenantPrincipal | undefined; cookieAuthenticated: boolean } {
-    const cookieToken = readSessionCookie(request)
-    if (cookieToken !== undefined) {
-      const principal = options.authenticator.authenticateToken(cookieToken)
-      if (principal !== undefined) return { principal, cookieAuthenticated: true }
-    }
     const ptoken = url.searchParams.get('ptoken')
-    return {
-      principal: ptoken === null ? undefined : options.authenticator.authenticateToken(ptoken),
-      cookieAuthenticated: false,
+    const ptokenPrincipal = ptoken === null ? undefined : options.authenticator.authenticateToken(ptoken)
+    const cookieToken = readSessionCookie(request)
+    const cookiePrincipal = cookieToken === undefined ? undefined : options.authenticator.authenticateToken(cookieToken)
+    if (ptokenPrincipal !== undefined) {
+      return {
+        principal: ptokenPrincipal,
+        cookieAuthenticated: ptokenPrincipal.tenantId === cookiePrincipal?.tenantId,
+      }
     }
+    return { principal: cookiePrincipal, cookieAuthenticated: cookiePrincipal !== undefined }
   }
 
   async function handleUserMount(

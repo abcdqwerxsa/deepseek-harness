@@ -184,6 +184,37 @@ describe('web proxy platform session', () => {
     await response.text()
   })
 
+  it("lets a fresh ptoken win over another user's still-valid cookie", async () => {
+    const { platform } = await startFakePlatform()
+    // Switching accounts in one browser: the member's cookie still
+    // authenticates, but the admin console link's ptoken is the current
+    // sign-in intent — the cookie must rotate to the admin identity instead
+    // of serving the mount as the wrong principal (403).
+    const response = await fetch(`${base(platform)}/u/_platform/admin-1/?ptoken=${TOKEN_ADMIN}`, {
+      headers: { cookie: `dsh-platform-session=${TOKEN_A}` },
+      redirect: 'manual',
+    })
+    expect(response.status).toBe(303)
+    expect(response.headers.get('location')).toBe('/u/_platform/admin-1/')
+    expect(cookieValue(cookieJar(response), 'dsh-platform-session')).toBe(`dsh-platform-session=${TOKEN_ADMIN}`)
+    await response.text()
+  })
+
+  it('keeps an already-matching cookie through a console link', async () => {
+    const { platform, child } = await startFakePlatform()
+    // Same identity re-opening its link: no rotation; the mount proxies
+    // straight into the child's launch-token dance (no second platform
+    // Set-Cookie).
+    const response = await fetch(`${base(platform)}/u/core/alpha/?ptoken=${TOKEN_A}`, {
+      headers: { cookie: `dsh-platform-session=${TOKEN_A}` },
+      redirect: 'manual',
+    })
+    expect(response.status).toBe(303)
+    expect(response.headers.get('location')).toBe(`/u/core/alpha/?token=${child.launchToken}`)
+    expect(response.headers.get('set-cookie')).toBeNull()
+    await response.text()
+  })
+
   it('refuses glob-metacharacter department selectors for the platform admin', async () => {
     const { platform } = await startFakePlatform()
     for (const dept of ['*', 'dept%']) {
