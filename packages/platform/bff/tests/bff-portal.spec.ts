@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { JSDOM, VirtualConsole } from 'jsdom'
+import { WebSocket as WsWebSocket } from 'ws'
 import { devTokenAuthenticator, type DevTokenIdentity } from '../src/auth.ts'
 import { startPlatformServer, type PlatformServer } from '../src/index.ts'
 
@@ -7,6 +8,7 @@ import { startPlatformServer, type PlatformServer } from '../src/index.ts'
  * Enterprise Agent Mission Cockpit (Option B) end to end inside JSDOM:
  * Verifies that the new three-column workspace loads cleanly,
  * authenticates seamlessly, displays role-specific controls,
+ * receives streaming updates over WebSocket, handles permissions,
  * and mounts the admin console drawer for managers.
  */
 
@@ -18,11 +20,25 @@ const cleanupFns: Array<() => Promise<void> | void> = []
 const liveDoms: JSDOM[] = []
 
 afterEach(async () => {
-  while (liveDoms.length > 0) liveDoms.pop()!.window.close()
+  while (liveDoms.length > 0) {
+    const dom = liveDoms.pop()!
+    try {
+      dom.window.__agentCockpit?.logout()
+    } catch {}
+    dom.window.close()
+  }
   while (cleanupFns.length > 0) await cleanupFns.pop()!()
 })
 
-async function startCockpitStack(): Promise<PlatformServer> {
+class PortalFakeHub {
+  permissionHandler: ((request: unknown) => Promise<unknown>) | undefined
+  updateListener: ((sessionId: string, update: unknown) => void) | undefined
+  emitUpdate(sessionId: string, update: unknown): void {
+    this.updateListener?.(sessionId, update)
+  }
+}
+
+async function startCockpitStack(hub?: PortalFakeHub): Promise<PlatformServer> {
   const identities = new Map<string, DevTokenIdentity>([
     [MEMBER_TOKEN, { deptId: 'deptA', userId: 'user1', role: 'member' }],
     [DEPT_ADMIN_TOKEN, { deptId: 'deptA', userId: 'lead', role: 'dept-admin' }],
@@ -30,7 +46,24 @@ async function startCockpitStack(): Promise<PlatformServer> {
   ])
   const server = await startPlatformServer({
     authenticator: devTokenAuthenticator(identities),
-    createRuntime: async () => { throw new Error('no runtime needed for portal UI tests') },
+    createRuntime: async tenantId => ({
+      tenantId,
+      request: async <T>(method: string): Promise<T> => {
+        if (method === 'session/new') return { sessionId: 'sess-portal-1' } as T
+        if (method === 'session/prompt') return { stopReason: 'end_turn' } as T
+        return {} as T
+      },
+      onUpdate: (listener) => {
+        if (hub) hub.updateListener = listener
+        return () => { if (hub) hub.updateListener = undefined }
+      },
+      onPermission: (handler) => {
+        if (hub) hub.permissionHandler = handler
+      },
+      get lastUsedAt(): number { return Date.now() },
+      dispose: async () => {},
+      exited: () => new Promise<void>(() => {}),
+    }),
   })
   cleanupFns.push(() => server.close())
   return server
@@ -50,11 +83,8 @@ async function openCockpit(server: PlatformServer, query = ''): Promise<JSDOM> {
     beforeParse: (window) => {
       window.fetch = (input: RequestInfo | URL, init?: RequestInit) =>
         fetch(new URL(input instanceof URL ? input.href : typeof input === 'string' ? input : input.url, `${base}/`).toString(), init)
-      // Mock WebSocket
-      window.WebSocket = class {
-        close() {}
-        send() {}
-      } as unknown as typeof WebSocket
+      // Real WebSocket client backed by 'ws'
+      window.WebSocket = WsWebSocket as unknown as typeof WebSocket
     },
   })
   ;(dom as JSDOM & { pageErrors: unknown[] }).pageErrors = pageErrors
@@ -144,5 +174,59 @@ describe('enterprise agent cockpit portal (Option B)', () => {
       expect(doc.getElementById('admin-modal-body')!.textContent).toContain('实例总体概览')
       expect(doc.getElementById('admin-modal-body')!.textContent).toContain('deptA')
     })
+  }, 20_000)
+
+  it('renders streaming thoughts and resolves human-in-the-loop permission approvals via real WebSocket', async () => {
+    const hub = new PortalFakeHub()
+    const server = await startCockpitStack(hub)
+    const dom = await openCockpit(server)
+    const doc = dom.window.document
+
+    await vi.waitFor(() => { expect(dom.window.__agentCockpit).toBeDefined() })
+    login(doc, MEMBER_TOKEN)
+
+    await vi.waitFor(() => {
+      expect(doc.getElementById('workspace-layout')!.hidden).toBe(false)
+      expect(dom.window.__agentCockpit.state.activeSessionId).toBe('sess-portal-1')
+    })
+
+    // 1. Emit thought chunk from runtime
+    hub.emitUpdate('sess-portal-1', {
+      sessionUpdate: 'agent_thought_chunk',
+      content: { type: 'text', text: 'Analyzing database records...' },
+    })
+
+    await vi.waitFor(() => {
+      const thoughtCard = doc.querySelector('.active-thought-card')
+      expect(thoughtCard).not.toBeNull()
+      expect(thoughtCard!.textContent).toContain('Analyzing database records...')
+    })
+
+    // 2. Trigger permission request
+    let permissionAnswer: unknown
+    const permPromise = hub.permissionHandler!({
+      title: 'Run bash script',
+      options: [{ id: 'allow-once', title: 'Allow once' }],
+    }).then((ans) => { permissionAnswer = ans })
+
+    await vi.waitFor(() => {
+      const permCard = doc.querySelector('.permission-card')
+      expect(permCard).not.toBeNull()
+      expect(permCard!.textContent).toContain('Run bash script')
+    })
+
+    // Click allow button
+    const allowBtn = doc.querySelector('.allow-btn') as HTMLButtonElement
+    expect(allowBtn).not.toBeNull()
+    allowBtn.click()
+
+    // Verify permission card removed and answer received with optionId
+    await vi.waitFor(() => {
+      expect(doc.querySelector('.permission-card')).toBeNull()
+      expect(permissionAnswer).toEqual({
+        outcome: { outcome: 'selected', optionId: 'allow-once' },
+      })
+    })
+    await permPromise
   }, 20_000)
 })

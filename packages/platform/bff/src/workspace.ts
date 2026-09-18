@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { basename, extname, join, relative, resolve, sep } from 'node:path'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { TenantPrincipal } from './auth.ts'
 import { isSafeTenantSegment } from './auth.ts'
 
@@ -46,9 +46,49 @@ export function getTenantWorkspaceDir(tenantsRoot: string, principal: TenantPrin
   return resolve(dir)
 }
 
+export function safeResolveTenantCwd(workspaceDir: string, requestedCwd: string): string {
+  if (requestedCwd.includes('\u0000')) {
+    throw new PathTraversalError(requestedCwd)
+  }
+  const normalizedRoot = resolve(workspaceDir)
+  let canonicalRoot = normalizedRoot
+  try {
+    if (existsSync(normalizedRoot)) canonicalRoot = realpathSync(normalizedRoot)
+  } catch {
+    // Root may not exist yet in tests
+  }
+
+  let resolved: string
+  if (isAbsolute(requestedCwd)) {
+    resolved = resolve(requestedCwd)
+  } else {
+    resolved = resolve(workspaceDir, requestedCwd)
+  }
+
+  // 1. Lexical boundary check
+  if (resolved !== normalizedRoot && !resolved.startsWith(normalizedRoot + sep)) {
+    throw new PathTraversalError(requestedCwd)
+  }
+
+  // 2. Canonical boundary check
+  if (existsSync(resolved)) {
+    try {
+      const canonical = realpathSync(resolved)
+      if (canonical !== canonicalRoot && !canonical.startsWith(canonicalRoot + sep)) {
+        throw new PathTraversalError(requestedCwd)
+      }
+    } catch (err) {
+      if (err instanceof PathTraversalError) throw err
+    }
+  }
+
+  return resolved
+}
+
 /**
  * Resolve a user-supplied relative path against the user's workspace root.
- * Throws `PathTraversalError` if the path escapes the workspace root.
+ * Throws `PathTraversalError` if the path escapes the workspace root,
+ * whether lexically or via symbolic links.
  */
 export function safeResolveWorkspacePath(workspaceDir: string, relativePath: string): string {
   if (relativePath.includes('\u0000')) {
@@ -59,15 +99,56 @@ export function safeResolveWorkspacePath(workspaceDir: string, relativePath: str
   const resolved = resolve(workspaceDir, sanitized)
   const normalizedRoot = resolve(workspaceDir)
 
+  // 1. Lexical boundary check
   if (resolved !== normalizedRoot && !resolved.startsWith(normalizedRoot + sep)) {
     throw new PathTraversalError(relativePath)
   }
+
+  // 2. Canonical boundary check against symlink escapes
+  let canonicalRoot = normalizedRoot
+  try {
+    if (existsSync(normalizedRoot)) canonicalRoot = realpathSync(normalizedRoot)
+  } catch {
+    // Root may not exist yet in pure unit tests
+  }
+
+  if (existsSync(resolved)) {
+    try {
+      const canonical = realpathSync(resolved)
+      if (canonical !== canonicalRoot && !canonical.startsWith(canonicalRoot + sep)) {
+        throw new PathTraversalError(relativePath)
+      }
+    } catch (err) {
+      if (err instanceof PathTraversalError) throw err
+    }
+  } else {
+    // When target does not exist yet (e.g. before write), verify that existing ancestors
+    // do not point outside the workspace root via symlink
+    let ancestor = resolve(resolved, '..')
+    while (!existsSync(ancestor) && ancestor !== normalizedRoot) {
+      const parent = resolve(ancestor, '..')
+      if (parent === ancestor) break
+      ancestor = parent
+    }
+    if (existsSync(ancestor)) {
+      try {
+        const canonicalAncestor = realpathSync(ancestor)
+        if (canonicalAncestor !== canonicalRoot && !canonicalAncestor.startsWith(canonicalRoot + sep)) {
+          throw new PathTraversalError(relativePath)
+        }
+      } catch (err) {
+        if (err instanceof PathTraversalError) throw err
+      }
+    }
+  }
+
   return resolved
 }
 
 /**
  * List files in the tenant workspace.
  * Recursively scans up to maxDepth (default 3) to collect files and directories.
+ * Strictly ignores external symlinks and refuses recursing into symlink directories.
  */
 export function listWorkspaceFiles(
   workspaceDir: string,
@@ -75,6 +156,13 @@ export function listWorkspaceFiles(
 ): WorkspaceFileInfo[] {
   const root = resolve(workspaceDir)
   if (!existsSync(root)) return []
+
+  let canonicalRoot = root
+  try {
+    canonicalRoot = realpathSync(root)
+  } catch {
+    // Fall back to root
+  }
 
   const maxDepth = options?.maxDepth ?? 3
   const maxEntries = options?.maxEntries ?? 500
@@ -96,6 +184,20 @@ export function listWorkspaceFiles(
 
       const fullPath = join(currentDir, entry)
       try {
+        const lstat = lstatSync(fullPath)
+        const isSymlink = lstat.isSymbolicLink()
+
+        if (isSymlink) {
+          try {
+            const canonicalTarget = realpathSync(fullPath)
+            if (canonicalTarget !== canonicalRoot && !canonicalTarget.startsWith(canonicalRoot + sep)) {
+              continue // Bar symlinks escaping the workspace
+            }
+          } catch {
+            continue // Skip broken symlinks
+          }
+        }
+
         const stat = statSync(fullPath)
         const rel = relative(root, fullPath).split(sep).join('/')
         results.push({
@@ -105,11 +207,13 @@ export function listWorkspaceFiles(
           mtimeMs: Math.round(stat.mtimeMs),
           isDirectory: stat.isDirectory(),
         })
-        if (stat.isDirectory()) {
+
+        // Defensive: never recurse into symlinked directories to prevent cycles and traversal
+        if (stat.isDirectory() && !isSymlink) {
           scan(fullPath, currentDepth + 1)
         }
       } catch {
-        // Skip unreadable files or broken links
+        // Skip unreadable files
       }
     }
   }
@@ -151,6 +255,14 @@ export function readWorkspaceFile(
   relativePath: string,
 ): { readonly data: Buffer; readonly contentType: string; readonly size: number; readonly mtimeMs: number } {
   const resolved = safeResolveWorkspacePath(workspaceDir, relativePath)
+  const lstat = lstatSync(resolved)
+  if (lstat.isSymbolicLink()) {
+    const canonicalRoot = realpathSync(resolve(workspaceDir))
+    const canonical = realpathSync(resolved)
+    if (canonical !== canonicalRoot && !canonical.startsWith(canonicalRoot + sep)) {
+      throw new PathTraversalError(relativePath)
+    }
+  }
   const stat = statSync(resolved)
   if (stat.isDirectory()) {
     throw new Error(`workspace: path is a directory: ${JSON.stringify(relativePath)}`)
@@ -171,6 +283,10 @@ export function writeWorkspaceFile(
   content: Buffer | Uint8Array,
 ): WorkspaceFileInfo {
   const resolved = safeResolveWorkspacePath(workspaceDir, relativePath)
+  // Refuse overwriting through an existing symlink
+  if (existsSync(resolved) && lstatSync(resolved).isSymbolicLink()) {
+    throw new PathTraversalError(relativePath)
+  }
   mkdirSync(resolve(resolved, '..'), { recursive: true })
   writeFileSync(resolved, content)
   const stat = statSync(resolved)

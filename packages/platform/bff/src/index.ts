@@ -24,6 +24,7 @@ import {
   listWorkspaceFiles,
   readWorkspaceFile,
   writeWorkspaceFile,
+  safeResolveTenantCwd,
   PathTraversalError,
 } from './workspace.ts'
 
@@ -95,16 +96,25 @@ interface TenantSockets {
 
 /** The build-free tenant portal served at `/` (and its scripts/styles). */
 const portalDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'portal')
+const portalCache = new Map<string, readonly [contentType: string, body: string]>()
+
 function getPortalFile(pathname: string): readonly [contentType: string, body: string] | undefined {
+  const cached = portalCache.get(pathname)
+  if (cached !== undefined) return cached
   try {
+    let result: readonly [contentType: string, body: string] | undefined
     if (pathname === '/' || pathname === '/index.html') {
-      return ['text/html; charset=utf-8', readFileSync(join(portalDir, 'index.html'), 'utf8')]
+      result = ['text/html; charset=utf-8', readFileSync(join(portalDir, 'index.html'), 'utf8')]
+    } else if (pathname === '/portal.js') {
+      result = ['text/javascript; charset=utf-8', readFileSync(join(portalDir, 'portal.js'), 'utf8')]
+    } else if (pathname === '/portal.css') {
+      result = ['text/css; charset=utf-8', readFileSync(join(portalDir, 'portal.css'), 'utf8')]
     }
-    if (pathname === '/portal.js') {
-      return ['text/javascript; charset=utf-8', readFileSync(join(portalDir, 'portal.js'), 'utf8')]
-    }
-    if (pathname === '/portal.css') {
-      return ['text/css; charset=utf-8', readFileSync(join(portalDir, 'portal.css'), 'utf8')]
+    if (result !== undefined) {
+      portalCache.set(pathname, result)
+      if (pathname === '/') portalCache.set('/index.html', result)
+      if (pathname === '/index.html') portalCache.set('/', result)
+      return result
     }
   } catch {
     return undefined
@@ -130,7 +140,15 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
     const entry = tenants.get(tenantId)
     if (entry === undefined) return
     const text = JSON.stringify(message)
-    for (const socket of entry.sockets) socket.send(text)
+    for (const socket of entry.sockets) {
+      if (socket.readyState === 1 /* WebSocket.OPEN */) {
+        try {
+          socket.send(text)
+        } catch (err) {
+          console.error('[platform-bff] ws broadcast failed:', err)
+        }
+      }
+    }
   }
 
   const forwardPermission = (tenantId: string, request: unknown): Promise<unknown> => {
@@ -279,10 +297,16 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
         try {
           const file = readWorkspaceFile(wsDir, filePath)
           const download = url.searchParams.get('download') === '1'
+          let contentType = file.contentType
+          if (!download && (contentType.includes('text/html') || contentType.includes('image/svg+xml'))) {
+            contentType = 'text/plain; charset=utf-8'
+          }
           const headers: Record<string, string | number> = {
-            'content-type': file.contentType,
+            'content-type': contentType,
             'content-length': file.size,
             'cache-control': 'no-cache',
+            'content-security-policy': "default-src 'none'; sandbox",
+            'x-content-type-options': 'nosniff',
           }
           if (download) {
             headers['content-disposition'] = `attachment; filename="${encodeURIComponent(basename(filePath))}"`
@@ -307,9 +331,27 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
           json(response, 400, { error: 'path query required' })
           return
         }
+        const MAX_UPLOAD_BYTES = 50 * 1024 * 1024 // 50MB bound
+        const contentLength = request.headers['content-length']
+        if (contentLength !== undefined) {
+          const cl = Number.parseInt(contentLength, 10)
+          if (!Number.isNaN(cl) && cl > MAX_UPLOAD_BYTES) {
+            json(response, 413, { error: 'payload too large' })
+            return
+          }
+        }
         try {
           const chunks: Buffer[] = []
-          for await (const chunk of request) chunks.push(chunk as Buffer)
+          let totalBytes = 0
+          for await (const chunk of request) {
+            const buf = chunk as Buffer
+            totalBytes += buf.length
+            if (totalBytes > MAX_UPLOAD_BYTES) {
+              json(response, 413, { error: 'payload too large' })
+              return
+            }
+            chunks.push(buf)
+          }
           const content = Buffer.concat(chunks)
           const fileInfo = writeWorkspaceFile(wsDir, filePath, content)
           transcript.audit(tenantId, 'workspace-upload', filePath)
@@ -327,19 +369,25 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
     }
     if (method === 'POST' && segments.length === 3 && segments[1] === 'session' && segments[2] === 'new') {
       const body = await readJsonBody(request) as { cwd?: string; mcpServers?: unknown[] }
-      let cwd = body.cwd
-      if (typeof cwd !== 'string' || cwd === '') {
-        if (options.tenantsRoot !== undefined) {
-          try {
-            cwd = getTenantWorkspaceDir(options.tenantsRoot, principal)
-          } catch {
-            json(response, 403, { error: 'forbidden' })
-            return
+      let cwd: string
+      if (options.tenantsRoot !== undefined) {
+        try {
+          const wsDir = getTenantWorkspaceDir(options.tenantsRoot, principal)
+          if (typeof body.cwd !== 'string' || body.cwd === '') {
+            cwd = wsDir
+          } else {
+            cwd = safeResolveTenantCwd(wsDir, body.cwd)
           }
-        } else {
+        } catch {
+          json(response, 403, { error: 'forbidden' })
+          return
+        }
+      } else {
+        if (typeof body.cwd !== 'string' || body.cwd === '') {
           json(response, 400, { error: 'cwd required' })
           return
         }
+        cwd = body.cwd
       }
       const mcpServers = Array.isArray(body.mcpServers) ? body.mcpServers : (options.defaultMcpServers ?? [])
       const result = await manager.withTenant(tenantId, runtime => runtime.request('session/new', {
@@ -361,6 +409,20 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
           json(response, 400, { error: 'text required' })
           return
         }
+        // Record user turn in transcript and broadcast update so it rehydrates on session switch/reload
+        transcript.append(tenantId, sessionId, {
+          sessionUpdate: 'user_message_chunk',
+          content: { type: 'text', text: body.text },
+        })
+        broadcast(tenantId, {
+          type: 'session-update',
+          sessionId,
+          update: {
+            sessionUpdate: 'user_message_chunk',
+            content: { type: 'text', text: body.text },
+          },
+        })
+
         // The runtime may have been reaped since this session last ran: ACP
         // prompts only work on open sessions, so re-open (resume) first and
         // treat "already active" as success. The registry's cwd is what
@@ -399,7 +461,16 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
           json(response, 400, { error: 'cwd required' })
           return
         }
-        const cwd = body.cwd
+        let cwd = body.cwd
+        if (options.tenantsRoot !== undefined) {
+          try {
+            const wsDir = getTenantWorkspaceDir(options.tenantsRoot, principal)
+            cwd = safeResolveTenantCwd(wsDir, cwd)
+          } catch {
+            json(response, 403, { error: 'forbidden' })
+            return
+          }
+        }
         const result = await manager.withTenant(tenantId, async (runtime) => {
           try {
             return await runtime.request('session/resume', { sessionId, cwd, mcpServers: [] })
@@ -807,6 +878,15 @@ function validPermissionResponse(response: unknown): unknown {
     if (typeof outcome === 'object' && outcome !== null) {
       const kind = (outcome as { outcome?: unknown }).outcome
       if (kind === 'cancelled' || kind === 'selected') return response
+      if (kind === 'approved') {
+        const optionId = (outcome as { optionId?: unknown }).optionId
+        return {
+          outcome: {
+            outcome: 'selected',
+            optionId: typeof optionId === 'string' ? optionId : 'allow-once',
+          },
+        }
+      }
     }
   }
   return { outcome: { outcome: 'cancelled' } }

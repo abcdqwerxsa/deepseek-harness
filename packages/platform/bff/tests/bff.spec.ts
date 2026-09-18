@@ -90,7 +90,11 @@ async function startServer(
 function api(server: PlatformServer, token: string, path: string, init: RequestInit = {}): Promise<Response> {
   return fetch(`http://127.0.0.1:${server.port}${path}`, {
     ...init,
-    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      ...init.headers,
+    },
   })
 }
 
@@ -601,28 +605,63 @@ describe('platform BFF', () => {
     const list = await listRes.json() as { files: { name: string; relativePath: string }[] }
     expect(list.files.some(f => f.relativePath === 'sales.csv')).toBe(true)
 
-    // 3. Read file
+    // 3. Read file & check security headers
     const readRes = await api(server, TOKEN_A, '/api/workspace/file?path=sales.csv')
     expect(readRes.status).toBe(200)
     expect(await readRes.text()).toBe('month,val\nQ1,100\nQ2,200')
+    expect(readRes.headers.get('content-security-policy')).toBe("default-src 'none'; sandbox")
+    expect(readRes.headers.get('x-content-type-options')).toBe('nosniff')
 
-    // 4. Reject traversal on read
+    // 4. Stored XSS defense: HTML file served as text/plain without download=1
+    await api(server, TOKEN_A, '/api/workspace/upload?path=report.html', {
+      method: 'POST',
+      body: '<script>alert(1)</script>',
+    })
+    const htmlRead = await api(server, TOKEN_A, '/api/workspace/file?path=report.html')
+    expect(htmlRead.status).toBe(200)
+    expect(htmlRead.headers.get('content-type')).toBe('text/plain; charset=utf-8')
+
+    // 5. Reject traversal on read
     const traversalRead = await api(server, TOKEN_A, '/api/workspace/file?path=../other.txt')
     expect(traversalRead.status).toBe(403)
 
-    // 5. Reject traversal on upload
+    // 6. Reject traversal on upload
     const traversalUpload = await api(server, TOKEN_A, '/api/workspace/upload?path=../../hacked.txt', {
       method: 'POST',
       body: 'bad',
     })
     expect(traversalUpload.status).toBe(403)
 
-    // 6. Automatic workspace cwd on session/new when omitted
+    // 7. Reject upload exceeding payload limit (content-length header check)
+    const { request: httpRequest } = await import('node:http')
+    const largeStatus = await new Promise<number>((resolve) => {
+      const req = httpRequest(`http://127.0.0.1:${server.port}/api/workspace/upload?path=huge.bin`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${TOKEN_A}`,
+          'content-length': '60000000',
+        },
+      }, (res) => {
+        resolve(res.statusCode ?? 0)
+      })
+      req.end()
+    })
+    expect(largeStatus).toBe(413)
+
+    // 8. Automatic workspace cwd on session/new when omitted
     const autoSessionRes = await api(server, TOKEN_A, '/api/session/new', {
       method: 'POST',
       body: JSON.stringify({}),
     })
     expect(autoSessionRes.status).toBe(200)
+
+    // 9. Reject session/new with escaping cwd when tenantsRoot is configured
+    const escapingSession = await api(server, TOKEN_A, '/api/session/new', {
+      method: 'POST',
+      body: JSON.stringify({ cwd: '/etc' }),
+    })
+    expect(escapingSession.status).toBe(403)
+
     rmSync(tempDir, { recursive: true, force: true })
   })
 })

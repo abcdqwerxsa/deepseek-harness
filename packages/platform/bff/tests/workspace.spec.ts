@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -9,6 +9,7 @@ import {
   PathTraversalError,
   readWorkspaceFile,
   safeResolveWorkspacePath,
+  safeResolveTenantCwd,
   writeWorkspaceFile,
 } from '../src/workspace.ts'
 
@@ -63,5 +64,63 @@ describe('tenant workspace file safety', () => {
     expect(relPaths).toContain('hello.txt')
     expect(relPaths).toContain('data')
     expect(relPaths).toContain('data/report.csv')
+  })
+
+  it('strictly bars symlink traversal and symlink overwriting', async () => {
+    const { symlinkSync, writeFileSync, mkdirSync } = await import('node:fs')
+    const wsDir = join(tempRoot, 'ws')
+    const outsideDir = join(tempRoot, 'outside')
+    mkdirSync(wsDir, { recursive: true })
+    mkdirSync(outsideDir, { recursive: true })
+
+    // Outside secret file
+    writeFileSync(join(outsideDir, 'secret.env'), 'SUPER_SECRET=123', 'utf8')
+
+    // Create a symlink inside ws pointing outside
+    symlinkSync(join(outsideDir, 'secret.env'), join(wsDir, 'stolen.txt'))
+
+    // 1. Reading through symlink must throw PathTraversalError
+    expect(() => readWorkspaceFile(wsDir, 'stolen.txt')).toThrow(PathTraversalError)
+
+    // 2. Writing to an existing symlink must throw PathTraversalError (never overwrite outside target)
+    expect(() => writeWorkspaceFile(wsDir, 'stolen.txt', Buffer.from('pwned', 'utf8'))).toThrow(PathTraversalError)
+    // Verify outside file was NOT overwritten
+    const { readFileSync } = await import('node:fs')
+    expect(readFileSync(join(outsideDir, 'secret.env'), 'utf8')).toBe('SUPER_SECRET=123')
+
+    // 3. Symlink directory pointing outside: listing must not include outside files
+    writeFileSync(join(outsideDir, 'external_doc.md'), '# external doc', 'utf8')
+    symlinkSync(outsideDir, join(wsDir, 'symlink_folder'))
+
+    const files = listWorkspaceFiles(wsDir)
+    const names = files.map(f => f.name)
+    expect(names).not.toContain('external_doc.md')
+
+    // 4. Directory symlink loop: listing must not infinite loop
+    symlinkSync(wsDir, join(wsDir, 'loop_link'))
+    const filesWithLoop = listWorkspaceFiles(wsDir)
+    expect(Array.isArray(filesWithLoop)).toBe(true)
+  })
+
+  it('safely resolves and restricts session cwd', () => {
+    const wsDir = join(tempRoot, 'ws')
+    const subDir = join(wsDir, 'nested')
+    mkdirSync(subDir, { recursive: true })
+
+    // 1. Relative subfolder resolves correctly
+    expect(safeResolveTenantCwd(wsDir, 'nested')).toBe(subDir)
+
+    // 2. Absolute path inside workspace resolves correctly
+    expect(safeResolveTenantCwd(wsDir, subDir)).toBe(subDir)
+
+    // 3. Absolute path outside workspace is barred
+    expect(() => safeResolveTenantCwd(wsDir, '/etc')).toThrow(PathTraversalError)
+    expect(() => safeResolveTenantCwd(wsDir, tempRoot)).toThrow(PathTraversalError)
+
+    // 4. Relative traversal escaping workspace is barred
+    expect(() => safeResolveTenantCwd(wsDir, '../../etc')).toThrow(PathTraversalError)
+
+    // 5. Null byte is barred
+    expect(() => safeResolveTenantCwd(wsDir, 'nested\u0000')).toThrow(PathTraversalError)
   })
 })

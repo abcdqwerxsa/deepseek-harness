@@ -4,15 +4,16 @@
 (function () {
   'use strict'
 
-  const $ = (id) => document.getElementById(id)
+  const $ = (id) => (typeof document !== 'undefined' && document ? document.getElementById(id) : null)
   const state = {
     token: '',
     principal: null,
     ws: null,
+    reconnectTimer: null,
+    isBusy: false,
     sessions: [],
     activeSessionId: null,
     files: [],
-    pendingPermissions: new Map(),
     currentThoughtText: '',
     currentAgentText: '',
   }
@@ -74,7 +75,13 @@
 
   // WebSocket connection
   function connectWs() {
+    if (state.reconnectTimer) {
+      clearTimeout(state.reconnectTimer)
+      state.reconnectTimer = null
+    }
     if (state.ws) {
+      state.ws.onclose = null
+      state.ws.onerror = null
       try { state.ws.close() } catch {}
     }
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -82,7 +89,8 @@
     const ws = new WebSocket(wsUrl)
 
     ws.onopen = () => {
-      $('sandbox-badge').hidden = false
+      const badge = $('sandbox-badge')
+      if (badge) badge.hidden = false
     }
 
     ws.onmessage = (event) => {
@@ -95,9 +103,12 @@
     }
 
     ws.onclose = () => {
-      $('sandbox-badge').hidden = true
+      const badge = $('sandbox-badge')
+      if (badge) badge.hidden = true
       // Reconnect after 3s if still authenticated
-      if (state.token) setTimeout(connectWs, 3000)
+      if (state.token) {
+        state.reconnectTimer = setTimeout(connectWs, 3000)
+      }
     }
 
     state.ws = ws
@@ -109,7 +120,15 @@
       const update = msg.update || {}
       const kind = update.sessionUpdate
 
-      if (kind === 'agent_thought_chunk') {
+      if (kind === 'user_message_chunk') {
+        const text = update.content?.text || ''
+        const lastMsg = $('chat-messages').lastElementChild
+        const alreadyRendered = lastMsg && lastMsg.classList.contains('message-user') && lastMsg.textContent === text
+        if (!alreadyRendered) {
+          finishCurrentTurn()
+          appendUserMessage(text)
+        }
+      } else if (kind === 'agent_thought_chunk') {
         const text = update.content?.text || ''
         state.currentThoughtText += text
         renderThoughtChunk(state.currentThoughtText)
@@ -231,6 +250,8 @@
     const card = document.createElement('div')
     card.className = 'permission-card'
     card.id = `perm-${id}`
+    const options = Array.isArray(request?.options) ? request.options : []
+    const defaultOptionId = options[0]?.id || 'allow-once'
     card.innerHTML = `
       <div class="permission-title">
         <span>⚠️</span>
@@ -242,18 +263,18 @@
         <button class="btn btn-sm btn-primary allow-btn">允许执行</button>
       </div>
     `
-    card.querySelector('.allow-btn').onclick = () => answerPermission(id, 'approved')
-    card.querySelector('.deny-btn').onclick = () => answerPermission(id, 'cancelled')
+    card.querySelector('.allow-btn').onclick = () => answerPermission(id, { outcome: 'selected', optionId: defaultOptionId })
+    card.querySelector('.deny-btn').onclick = () => answerPermission(id, { outcome: 'cancelled' })
     $('chat-messages').appendChild(card)
     scrollChatBottom()
   }
 
-  function answerPermission(id, outcome) {
+  function answerPermission(id, outcomeObj) {
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
       state.ws.send(JSON.stringify({
         type: 'permission-response',
         id,
-        response: { outcome: { outcome } },
+        response: { outcome: outcomeObj },
       }))
     }
     const card = document.getElementById(`perm-${id}`)
@@ -302,27 +323,59 @@
     })
   }
 
+  function finishCurrentTurn() {
+    document.querySelectorAll('.active-thought-card').forEach(e => e.classList.remove('active-thought-card'))
+    document.querySelectorAll('.active-tools-card').forEach(e => e.classList.remove('active-tools-card'))
+    document.querySelectorAll('.active-agent-body').forEach(e => e.classList.remove('active-agent-body'))
+    state.currentThoughtText = ''
+    state.currentAgentText = ''
+  }
+
+  function setBusy(busy) {
+    state.isBusy = busy
+    const sendBtn = $('send-btn')
+    const input = $('chat-input')
+    if (sendBtn) {
+      sendBtn.disabled = busy
+      sendBtn.textContent = busy ? '执行中...' : '发送'
+    }
+    if (input) {
+      input.disabled = busy
+      if (!busy) input.focus()
+    }
+  }
+
   async function selectSession(sessionId) {
     state.activeSessionId = sessionId
     renderSessionList()
     $('chat-messages').innerHTML = ''
-    state.currentThoughtText = ''
-    state.currentAgentText = ''
+    finishCurrentTurn()
 
     // Load transcript
     try {
-      const transcript = await api(`/api/session/${encodeURIComponent(sessionId)}/transcript`)
-      transcript.forEach((t) => {
-        if (t.event === 'user_message' || t.update?.sessionUpdate === 'user_message_chunk') {
-          appendUserMessage(t.detail || t.update?.content?.text || '')
-        } else if (t.update?.sessionUpdate === 'agent_message_chunk') {
-          renderAgentChunk(t.update?.content?.text || '')
+      const rows = await api(`/api/session/${encodeURIComponent(sessionId)}/transcript`)
+      rows.forEach((t) => {
+        let update = t.update
+        if (typeof update === 'string') {
+          try {
+            update = JSON.parse(update)
+          } catch {
+            update = {}
+          }
+        }
+        const kind = update?.sessionUpdate
+        if (kind === 'user_message_chunk') {
+          finishCurrentTurn()
+          appendUserMessage(update.content?.text || '')
+        } else if (kind === 'agent_thought_chunk') {
+          state.currentThoughtText += update.content?.text || ''
+          renderThoughtChunk(state.currentThoughtText)
+        } else if (kind === 'agent_message_chunk') {
+          state.currentAgentText += update.content?.text || ''
+          renderAgentChunk(state.currentAgentText)
         }
       })
-      // Clear active classes so new messages start fresh cards
-      document.querySelectorAll('.active-thought-card').forEach(e => e.classList.remove('active-thought-card'))
-      document.querySelectorAll('.active-tools-card').forEach(e => e.classList.remove('active-tools-card'))
-      document.querySelectorAll('.active-agent-body').forEach(e => e.classList.remove('active-agent-body'))
+      finishCurrentTurn()
     } catch (e) {
       console.error('[cockpit] Failed to load transcript:', e)
     }
@@ -332,7 +385,7 @@
     try {
       const res = await api('/api/session/new', {
         method: 'POST',
-        body: JSON.stringify({}),
+        body: JSON.stringify({ cwd: '/workspace' }),
       })
       if (res.sessionId) {
         state.sessions.unshift({ sessionId: res.sessionId, cwd: res.cwd })
@@ -352,19 +405,15 @@
   }
 
   async function sendPrompt() {
+    if (state.isBusy) return
     const input = $('chat-input')
     const text = input.value.trim()
     if (!text || !state.activeSessionId) return
 
     input.value = ''
     appendUserMessage(text)
-
-    // Reset current streaming states
-    document.querySelectorAll('.active-thought-card').forEach(e => e.classList.remove('active-thought-card'))
-    document.querySelectorAll('.active-tools-card').forEach(e => e.classList.remove('active-tools-card'))
-    document.querySelectorAll('.active-agent-body').forEach(e => e.classList.remove('active-agent-body'))
-    state.currentThoughtText = ''
-    state.currentAgentText = ''
+    finishCurrentTurn()
+    setBusy(true)
 
     try {
       await api(`/api/session/${encodeURIComponent(state.activeSessionId)}/prompt`, {
@@ -375,6 +424,9 @@
       await loadWorkspaceFiles()
     } catch (e) {
       renderAgentChunk(`\n> ⚠️ 执行错误: ${e.message}`)
+    } finally {
+      finishCurrentTurn()
+      setBusy(false)
     }
   }
 
@@ -422,8 +474,9 @@
   }
 
   async function uploadFile(file) {
-    if (!file) return
+    if (!file || state.isBusy) return
     const path = file.name
+    setBusy(true)
     try {
       const buf = await file.arrayBuffer()
       const res = await fetch(`/api/workspace/upload?path=${encodeURIComponent(path)}`, {
@@ -434,11 +487,13 @@
         },
         body: buf,
       })
-      if (!res.ok) throw new Error('上传失败')
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        throw new Error(errData.error || `上传失败 (HTTP ${res.status})`)
+      }
       await loadWorkspaceFiles()
       // Announce file upload to agent
       if (state.activeSessionId) {
-        appendUserMessage(`已上传文件: ${file.name}`)
         await api(`/api/session/${encodeURIComponent(state.activeSessionId)}/prompt`, {
           method: 'POST',
           body: JSON.stringify({ text: `我已经将文件 ${file.name} 放入工作区，请查看并开始分析。` }),
@@ -446,6 +501,9 @@
       }
     } catch (e) {
       alert('上传文件失败: ' + e.message)
+    } finally {
+      finishCurrentTurn()
+      setBusy(false)
     }
   }
 
@@ -526,17 +584,29 @@
   function logout() {
     state.token = ''
     state.principal = null
+    if (state.reconnectTimer) {
+      clearTimeout(state.reconnectTimer)
+      state.reconnectTimer = null
+    }
     if (state.ws) {
+      state.ws.onclose = null
+      state.ws.onerror = null
       try { state.ws.close() } catch {}
       state.ws = null
     }
     sessionStorage.removeItem('dsh_token')
-    $('auth-banner').hidden = false
-    $('workspace-layout').hidden = true
-    $('dept-badge').hidden = true
-    $('user-info').hidden = true
-    $('admin-btn').hidden = true
-    $('logout-btn').hidden = true
+    const banner = $('auth-banner')
+    if (banner) banner.hidden = false
+    const layout = $('workspace-layout')
+    if (layout) layout.hidden = true
+    const dept = $('dept-badge')
+    if (dept) dept.hidden = true
+    const user = $('user-info')
+    if (user) user.hidden = true
+    const admin = $('admin-btn')
+    if (admin) admin.hidden = true
+    const logoutBtn = $('logout-btn')
+    if (logoutBtn) logoutBtn.hidden = true
   }
 
   // Wire Event Listeners
@@ -583,6 +653,9 @@
     const params = new URLSearchParams(location.search)
     const urlToken = params.get('ptoken') || params.get('token')
     const savedToken = urlToken || sessionStorage.getItem('dsh_token')
+    if (urlToken) {
+      try { history.replaceState(null, '', location.pathname) } catch {}
+    }
     if (savedToken) {
       $('token-input').value = savedToken
       login(savedToken)
