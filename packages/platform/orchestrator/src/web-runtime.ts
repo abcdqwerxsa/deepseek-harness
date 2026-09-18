@@ -102,6 +102,12 @@ export async function spawnWebRuntime(
     extendEnv: false,
   })
   let launchToken: string | undefined
+  // Last stderr tail for spawn-failure diagnostics: a child that dies before
+  // readiness must explain itself in the thrown error.
+  let stderrTail = ''
+  child.stderr?.on('data', (chunk: Buffer) => {
+    stderrTail = `${stderrTail}${chunk.toString('utf8')}`.slice(-2_000)
+  })
   const announced = new Promise<string>((resolve, reject) => {
     let buffer = ''
     const scan = (chunk: string): void => {
@@ -148,7 +154,7 @@ export async function spawnWebRuntime(
     await Promise.race([
       announced.then((url) => { launchToken = tokenOf(url) }),
       exited.then(() => {
-        throw new Error(`web-runtime: child for ${JSON.stringify(key)} exited before announcing readiness on port ${String(port)}`)
+        throw new Error(`web-runtime: child for ${JSON.stringify(key)} exited before announcing readiness on port ${String(port)}${stderrTail === '' ? '' : `: ${stderrTail.trim()}`}`)
       }),
     ])
   } catch (error) {

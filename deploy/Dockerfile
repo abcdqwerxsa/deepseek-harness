@@ -15,6 +15,9 @@ RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debia
   && apt-get install -y --no-install-recommends gcc libc6-dev python3 ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 RUN corepack enable && corepack prepare pnpm@11.7.0 --activate
+# pnpm 11's metadata/supply-chain fetches ignore npm_config_registry env, so
+# pin the mirror in the config file every pnpm path reads.
+RUN printf 'registry=https://registry.npmmirror.com\n' > /root/.npmrc
 WORKDIR /app
 # The client build embeds the source commit; build.sh injects it so the
 # 200MB+ .git tree stays out of the build context.
