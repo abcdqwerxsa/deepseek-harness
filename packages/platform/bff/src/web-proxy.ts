@@ -39,9 +39,14 @@ export function parseUserMount(pathname: string): { deptId: string; userId: stri
   return { deptId, userId, rest: rest.join('/') }
 }
 
+/** The subpath mount root without a trailing slash: `/u/<dept>/<user>`. */
+export function mountPath(deptId: string, userId: string): string {
+  return `/u/${deptId}/${userId}`
+}
+
 /** The subpath prefix ending in a slash: `/u/<dept>/<user>/`. */
 export function mountPrefix(deptId: string, userId: string): string {
-  return `/u/${deptId}/${userId}/`
+  return `${mountPath(deptId, userId)}/`
 }
 
 export interface WebMount {
@@ -64,8 +69,12 @@ export async function proxyWebRequest(
   const key = `${mount.deptId}/${mount.userId}`
   const runtime = await manager.acquire(key)
   try {
-    const target = `/${mount.rest}${url.search}`
-    const isIndex = request.method === 'GET' && mount.rest === ''
+    // Rebuild the child target from the RAW request URL, not the parsed URL:
+    // bundle URLs like /plugins/??pkg&rev= carry payload in the query, and
+    // WHATWG parsing folds everything after the first "?" into `search`,
+    // which a pathname+search recombination would silently mangle.
+    const target = stripToTarget(request.url ?? '/', mountPath(mount.deptId, mount.userId))
+    const isIndex = request.method === 'GET' && (target === '/' || target.startsWith('/?'))
     if (isIndex) {
       await forwardIndex(runtime, request, response, mount, target, url)
       return
@@ -74,6 +83,13 @@ export async function proxyWebRequest(
   } finally {
     manager.release(key)
   }
+}
+
+/** The child-side target for a raw request URL under the mount path. */
+function stripToTarget(rawUrl: string, path: string): string {
+  if (rawUrl === path) return '/'
+  const stripped = rawUrl.slice(path.length)
+  return stripped.startsWith('/') ? stripped : `/${stripped}`
 }
 
 /**
@@ -87,10 +103,9 @@ export function proxyWebUpgrade(
   socket: Duplex,
   head: Buffer,
   mount: WebMount,
-  url: URL,
 ): void {
   const key = `${mount.deptId}/${mount.userId}`
-  const target = `/${mount.rest}${url.search}`
+  const target = stripToTarget(request.url ?? '/', mountPath(mount.deptId, mount.userId))
   void manager.acquire(key).then((runtime) => {
     const upstream = connect(runtime.port, '127.0.0.1')
     let settled = false
@@ -190,15 +205,19 @@ function collectUpstream(port: number, request: IncomingMessage, target: string)
 }
 
 /**
- * Point the SPA's relative URLs (API posts, the remote.mux WebSocket) at the
- * subpath: the served index carries `<base href="/">` (frontend-static
- * injects it); an index without one gets it injected after `<head>`.
+ * Point the page's URLs at the subpath mount: single-slash-rooted `src`/
+ * `href` values (the dist's own `<base href="/">` anchor plus the webserver-
+ * injected `/plugins/...` script rows, which `<base>` cannot rebase because
+ * they are root-absolute) each gain the mount prefix, so relative assets,
+ * plugin bundles, and the anchor itself all resolve through the proxy. An
+ * index with no base tag at all gets one injected after `<head>`.
  */
 export function rewriteBase(body: Buffer, prefix: string): Buffer {
   const html = body.toString('utf8')
-  const anchored = html.replace(/<base\s+href="\/">/i, `<base href="${prefix}">`)
-  if (anchored !== html) return Buffer.from(anchored)
-  const injected = anchored.replace(/<head(?:\s[^>]*)?>/i, open => `${open}<base href="${prefix}">`)
+  const anchor = prefix.endsWith('/') ? prefix.slice(0, -1) : prefix
+  const rewritten = html.replace(/\b(src|href)="\/(?!\/)/g, `$1="${anchor}/`)
+  if (/<base\s/i.test(rewritten)) return Buffer.from(rewritten)
+  const injected = rewritten.replace(/<head(?:\s[^>]*)?>/i, open => `${open}<base href="${prefix}">`)
   return Buffer.from(injected)
 }
 

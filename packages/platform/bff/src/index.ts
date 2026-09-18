@@ -521,7 +521,7 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
           socket.destroy()
           return
         }
-        proxyWebUpgrade(webManager, request, socket, head, mount, url)
+        proxyWebUpgrade(webManager, request, socket, head, mount)
         return
       }
       if (url.pathname !== '/ws') {

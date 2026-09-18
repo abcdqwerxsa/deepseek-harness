@@ -70,7 +70,7 @@ describe.skipIf(!ready)('user-side original UI over a real dsh web child', () =>
       // Platform session mint from the console link.
       const mint = await fetch(`${origin}/u/core/alpha/?ptoken=${TOKEN_A}`, { redirect: 'manual' })
       expect(mint.status).toBe(303)
-      const session = mint.headers.getSetCookie().find(c => c.startsWith('dsh-platform-session='))
+      const session = mint.headers.getSetCookie().find(c => c.startsWith('dsh-platform-session='))!.split(';')[0] ?? ''
       expect(session).toBeDefined()
       await mint.text()
 
@@ -93,11 +93,19 @@ describe.skipIf(!ready)('user-side original UI over a real dsh web child', () =>
 
       // With both cookies the index HTML arrives with the base anchored at
       // the subpath mount — the contract the SPA's relative API/WS URLs
-      // depend on.
+      // depend on — and the webserver-injected root-absolute /plugins script
+      // row rebased under it.
       const index = await fetch(`${origin}/u/core/alpha/`, { headers: { cookie: `${session}; ${childCookie}` } })
       expect(index.status).toBe(200)
       const html = await index.text()
       expect(html).toContain('<base href="/u/core/alpha/">')
+      const pluginSrc = /src="([^"]*\/plugins\/[^"]*)"/.exec(html)?.[1]?.replaceAll('&amp;', '&')
+      expect(pluginSrc).toMatch(/^\/u\/core\/alpha\/plugins\//)
+      // The rebased plugin bundle streams through the subpath (prefix
+      // stripped) from the real child's /plugins route.
+      const bundle = await fetch(`${origin}${pluginSrc ?? ''}`, { headers: { cookie: session } })
+      expect(bundle.status).toBe(200)
+      expect((await bundle.text()).length).toBeGreaterThan(0)
 
       // Static assets stream through with the prefix stripped.
       const assetPath = new URL('assets/whatever.js', `${origin}/u/core/alpha/`).pathname

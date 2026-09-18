@@ -58,7 +58,7 @@ class FakeDshWeb {
         }
         if ((request.headers.cookie ?? '').includes('dsh-auth-demo=')) {
           response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-          response.end('<!doctype html><html lang="en"><head><base href="/"><title>DSH</title></head><body><div id="root"></div></body></html>')
+          response.end('<!doctype html><html lang="en"><head><base href="/"><title>DSH</title><script src="/plugins/??@deepseek-ai/dsh-client-modules/client.js&rev=1"></script></head><body><div id="root"></div></body></html>')
           return
         }
         response.writeHead(401)
@@ -217,11 +217,13 @@ describe('web proxy child auth dance and base rewrite', () => {
     expect(cookieJar(minted).find(c => c.startsWith('dsh-auth-demo='))).toContain('Path=/u/core/alpha/')
     await minted.text()
 
-    // Both cookies: index served with the base rewritten to the mount.
+    // Both cookies: index served with every URL anchored at the mount — the
+    // base tag plus the webserver-injected root-absolute /plugins script row.
     const index = await fetch(`${base(platform)}/u/core/alpha/`, { headers: { cookie: `${session}; ${childCookie}` } })
     expect(index.status).toBe(200)
     const html = await index.text()
     expect(html).toContain('<base href="/u/core/alpha/">')
+    expect(html).toContain('src="/u/core/alpha/plugins/??@deepseek-ai/dsh-client-modules/client.js&rev=1"')
   })
 })
 
