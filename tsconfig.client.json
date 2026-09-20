@@ -26,6 +26,9 @@
     "packages/*/*/tests/**/*.client.spec.tsx",
     "packages/*/*/tests/**/*.client.tsx",
     "packages/*/*/tests/**/*.client.ts",
+    // Portal SPA pure-logic sources typecheck with their client-face specs
+    // (components stay in the package-local vite tsconfig).
+    "packages/platform/portal-web/src/**/*.ts",
     // Client package outside packages/client with a local CSS module face.
     "packages/extensions/ui-cordis/src/css-modules.d.ts",
     "packages/client/tsdown.client.ts",
