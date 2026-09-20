@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
-import { ApiError, apiClient, type Principal, type SessionInfo } from './api'
+import { ApiError, apiClient, type ConfigOption, type PermissionRequest, type Principal, type SessionInfo } from './api'
 import { applyUpdate, emptyChat, finishTurn, fromRows, setTurnError, type ChatState, type SessionUpdate } from './events'
 import { TurnView } from './blocks'
+import { ModelPicker } from './ModelPicker'
+import { PermissionCard } from './PermissionCard'
+import { FilePanel } from './FilePanel'
 
 type Action =
   | { type: 'update'; update: SessionUpdate }
@@ -24,6 +27,8 @@ interface WsMessage {
   readonly type?: string
   readonly sessionId?: string
   readonly update?: SessionUpdate
+  readonly id?: string
+  readonly request?: unknown
 }
 
 export function Chat({ token, principal, onLogout }: {
@@ -37,6 +42,9 @@ export function Chat({ token, principal, onLogout }: {
   const [posting, setPosting] = useState(false)
   const [connected, setConnected] = useState(false)
   const [draft, setDraft] = useState('')
+  const [configOptions, setConfigOptions] = useState<readonly ConfigOption[] | null>(null)
+  const [permissions, setPermissions] = useState<readonly { id: string; request: PermissionRequest }[]>([])
+  const [filesRefresh, setFilesRefresh] = useState(0)
 
   const activeRef = useRef<string | null>(null)
   activeRef.current = activeId
@@ -45,6 +53,7 @@ export function Chat({ token, principal, onLogout }: {
   // the older snapshot clobber live chunks (reviewer P2).
   const resyncingRef = useRef(false)
   const staleRef = useRef(false)
+  const sendRef = useRef<WebSocket | null>(null)
   const stickRef = useRef(true)
   const streamRef = useRef<HTMLDivElement>(null)
 
@@ -74,6 +83,7 @@ export function Chat({ token, principal, onLogout }: {
     let ws: WebSocket | undefined
     const connect = () => {
       const ws = new WebSocket(`${protocol}//${location.host}/ws?token=${encodeURIComponent(token)}`)
+      sendRef.current = ws
       ws.onopen = () => {
         setConnected(true)
         void resync(activeRef.current)
@@ -81,8 +91,14 @@ export function Chat({ token, principal, onLogout }: {
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(String(event.data)) as WsMessage
+          if (msg.type === 'permission-request' && typeof msg.id === 'string') {
+            setPermissions(prev => [...prev, { id: msg.id as string, request: (msg.request ?? {}) as PermissionRequest }])
+          }
           if (msg.type === 'session-update' && msg.sessionId === activeRef.current && msg.update !== undefined) {
             if (resyncingRef.current) staleRef.current = true
+            if (msg.update.sessionUpdate === 'config_option_update' && msg.update.configOptions !== undefined) {
+              setConfigOptions(msg.update.configOptions as readonly ConfigOption[])
+            }
             dispatch({ type: 'update', update: msg.update })
           }
         } catch {
@@ -101,6 +117,7 @@ export function Chat({ token, principal, onLogout }: {
       closed = true
       if (timer !== undefined) clearTimeout(timer)
       ws?.close()
+      sendRef.current = null
     }
   }, [token, resync])
 
@@ -117,6 +134,8 @@ export function Chat({ token, principal, onLogout }: {
     setActiveId(sessionId)
     activeRef.current = sessionId
     stickRef.current = true
+    setConfigOptions(null)
+    setPermissions([])
     dispatch({ type: 'reset' })
     void resync(sessionId)
   }, [resync])
@@ -124,6 +143,8 @@ export function Chat({ token, principal, onLogout }: {
   const startDraft = useCallback(() => {
     setActiveId(null)
     activeRef.current = null
+    setConfigOptions(null)
+    setPermissions([])
     dispatch({ type: 'reset' })
   }, [])
 
@@ -140,6 +161,7 @@ export function Chat({ token, principal, onLogout }: {
         sessionId = sid
         setActiveId(sid)
         activeRef.current = sid
+        setConfigOptions(created.configOptions ?? null)
         setSessions(prev => [{ sessionId: sid, cwd: created.cwd }, ...prev])
       }
       // The user bubble arrives via the WS echo the BFF broadcasts — no
@@ -148,7 +170,10 @@ export function Chat({ token, principal, onLogout }: {
       // must not settle or error the turn now displayed (reviewer P2).
       const prompted = sessionId
       await apiClient.prompt(prompted, text)
-      if (activeRef.current === prompted) dispatch({ type: 'finish' })
+      if (activeRef.current === prompted) {
+        dispatch({ type: 'finish' })
+        setFilesRefresh(key => key + 1)
+      }
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         onLogout()
@@ -159,6 +184,14 @@ export function Chat({ token, principal, onLogout }: {
       setPosting(false)
     }
   }, [draft, posting, onLogout])
+
+  const answerPermission = useCallback((id: string, outcome: { outcome: 'selected'; optionId: string } | { outcome: 'cancelled' }) => {
+    const ws = sendRef.current
+    if (ws !== null && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'permission-response', id, response: { outcome } }))
+    }
+    setPermissions(prev => prev.filter(entry => entry.id !== id))
+  }, [])
 
   const onScroll = () => {
     const el = streamRef.current
@@ -211,13 +244,23 @@ export function Chat({ token, principal, onLogout }: {
       <main className="main">
         <header className="main-head">
           <span className="task-name">{activeSession !== null ? activeSession.sessionId.slice(0, 12) : '新任务'}</span>
+          <ModelPicker sessionId={activeId} configOptions={configOptions} onApplied={setConfigOptions} />
           {posting && <span className="posting">执行中…</span>}
         </header>
-        <div className="stream" ref={streamRef} onScroll={onScroll}>
-          {chat.turns.length === 0 && activeId === null && <Welcome onPick={setDraft} />}
-          {chat.turns.map(turn => <TurnView key={turn.id} turn={turn} />)}
-        </div>
-        <footer className="composer">
+        <div className="workspace-row">
+          <div className="main-col">
+            <div className="stream" ref={streamRef} onScroll={onScroll}>
+              {chat.turns.length === 0 && activeId === null && <Welcome onPick={setDraft} />}
+              {chat.turns.map(turn => <TurnView key={turn.id} turn={turn} />)}
+              {permissions.map(entry => (
+                <PermissionCard
+                  key={entry.id}
+                  request={entry.request}
+                  onAnswer={outcome => answerPermission(entry.id, outcome)}
+                />
+              ))}
+            </div>
+            <footer className="composer">
           <textarea
             value={draft}
             placeholder="描述你的任务…（Enter 发送，Shift+Enter 换行）"
@@ -233,7 +276,10 @@ export function Chat({ token, principal, onLogout }: {
           <button className="send" disabled={posting || draft.trim() === ''} onClick={() => void sendPrompt()}>
             {posting ? '执行中…' : '发送'}
           </button>
-        </footer>
+          </footer>
+          </div>
+          <FilePanel refreshKey={filesRefresh} onRefresh={() => setFilesRefresh(key => key + 1)} />
+        </div>
       </main>
     </div>
   )

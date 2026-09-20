@@ -40,6 +40,8 @@ export interface SessionUpdate {
   readonly title?: string
   readonly kind?: string
   readonly parameters?: unknown
+  /** Carried by config_option_update; the reducer ignores it, the shell consumes it. */
+  readonly configOptions?: readonly unknown[]
 }
 
 /** One transcript row: `{ update }` with the update possibly JSON-encoded. */

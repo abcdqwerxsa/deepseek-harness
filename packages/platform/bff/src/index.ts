@@ -450,6 +450,35 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
         json(response, 200, result)
         return
       }
+      if (method === 'POST' && action === 'config') {
+        const body = await readJsonBody(request) as { configId?: string; value?: string }
+        if (typeof body.configId !== 'string' || body.configId === '' || typeof body.value !== 'string') {
+          json(response, 400, { error: 'configId and value required' })
+          return
+        }
+        // Same reaped-runtime dance as prompt: ACP config mutation needs an
+        // open session, so resume first and treat "already active" as success.
+        const cwd = transcript.sessionCwd(tenantId, sessionId)
+        const result = await manager.withTenant(tenantId, async (runtime) => {
+          if (cwd !== undefined) {
+            try {
+              await runtime.request('session/resume', { sessionId, cwd, mcpServers: [] })
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error)
+              if (message.includes('not resumable')) throw new SessionGoneError(sessionId)
+              if (!message.includes('already active')) throw error
+            }
+          }
+          return runtime.request('session/setConfigOption', {
+            sessionId,
+            configId: body.configId,
+            value: body.value,
+          })
+        })
+        transcript.audit(tenantId, 'session-config', `${sessionId} ${body.configId}`)
+        json(response, 200, result)
+        return
+      }
       if (method === 'POST' && action === 'close') {
         const result = await manager.withTenant(tenantId, runtime => runtime.request('session/close', { sessionId }))
         transcript.audit(tenantId, 'session-close', sessionId)

@@ -149,6 +149,45 @@ describe('platform BFF', () => {
     expect(calls.slice(0, 3)).toEqual(['session/new', 'session/resume', 'session/prompt'])
   })
 
+  it('forwards session config mutations with the same resume dance', async () => {
+    const calls: string[] = []
+    const server = await startPlatformServer({
+      authenticator: devTokenAuthenticator(new Map([[TOKEN_A, ident('alpha')]])),
+      createRuntime: async tenantId => ({
+        tenantId,
+        request: async <T>(method: string, params: unknown): Promise<T> => {
+          calls.push(method)
+          if (method === 'session/new') return { sessionId: 'sess-cfg' } as T
+          if (method === 'session/resume') return {} as T
+          if (method === 'session/setConfigOption') {
+            return { configOptions: [{ id: 'model', currentValue: (params as { value: string }).value }] } as T
+          }
+          if (method === 'session/prompt') return { stopReason: 'end_turn' } as T
+          throw new Error(`spec fake: ${method}`)
+        },
+        onUpdate: () => () => {},
+        onPermission: () => {},
+        get lastUsedAt(): number {
+          return Date.now()
+        },
+        dispose: async () => {},
+        exited: () => new Promise<void>(() => {}),
+      }),
+    })
+    cleanupFns.push(() => server.close())
+
+    await api(server, TOKEN_A, '/api/session/new', { method: 'POST', body: JSON.stringify({ cwd: '/ws/alpha' }) })
+    const bad = await api(server, TOKEN_A, '/api/session/sess-cfg/config', { method: 'POST', body: JSON.stringify({ configId: 'model' }) })
+    expect(bad.status).toBe(400)
+
+    const res = await (await api(server, TOKEN_A, '/api/session/sess-cfg/config', {
+      method: 'POST',
+      body: JSON.stringify({ configId: 'model', value: '["prov","m1"]' }),
+    })).json() as { configOptions: { id: string; currentValue?: string }[] }
+    expect(res.configOptions[0]).toMatchObject({ id: 'model', currentValue: '["prov","m1"]' })
+    expect(calls).toEqual(['session/new', 'session/resume', 'session/setConfigOption'])
+  })
+
   it('registers the authoritative cwd on explicit resume and keeps prompting', async () => {
     // Legacy sessions (created before the registry existed) enter through the
     // documented resume route; the recorded cwd must keep later prompts

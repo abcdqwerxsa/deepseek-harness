@@ -15,7 +15,7 @@ export interface SessionInfo {
 export interface SessionNewResult {
   readonly sessionId: string
   readonly cwd?: string
-  readonly configOptions?: readonly unknown[]
+  readonly configOptions?: readonly ConfigOption[]
 }
 
 export interface FileInfo {
@@ -23,6 +23,33 @@ export interface FileInfo {
   readonly relativePath: string
   readonly size: number
   readonly isDirectory: boolean
+}
+
+export interface ConfigOptionEntry {
+  readonly value: string
+  readonly name: string
+  readonly description?: string
+}
+
+export interface ConfigOption {
+  readonly id: string
+  readonly name?: string
+  readonly currentValue?: string
+  readonly options?: readonly (ConfigOptionEntry | {
+    readonly group?: string
+    readonly name?: string
+    readonly options: readonly ConfigOptionEntry[]
+  })[]
+}
+
+export interface PermissionOption {
+  readonly id: string
+  readonly name: string
+}
+
+export interface PermissionRequest {
+  readonly options?: readonly PermissionOption[]
+  readonly [key: string]: unknown
 }
 
 export class ApiError extends Error {
@@ -77,5 +104,45 @@ export const apiClient = {
   transcript: (sessionId: string) =>
     api<readonly { update?: unknown }[]>(`/api/session/${encodeURIComponent(sessionId)}/transcript`),
 
+  sessionConfig: (sessionId: string, configId: string, value: string) =>
+    api<{ configOptions?: readonly ConfigOption[] }>(`/api/session/${encodeURIComponent(sessionId)}/config`, {
+      method: 'POST',
+      body: JSON.stringify({ configId, value }),
+    }),
+
   workspaceFiles: () => api<{ files: readonly FileInfo[] }>('/api/workspace/files'),
+}
+
+/** Upload one file into the workspace root (binary body, bearer auth). */
+export async function uploadWorkspaceFile(file: File): Promise<void> {
+  const token = storedToken()
+  const res = await fetch(`/api/workspace/upload?path=${encodeURIComponent(file.name)}`, {
+    method: 'POST',
+    headers: {
+      ...(token === null ? {} : { authorization: `Bearer ${token}` }),
+      'content-type': 'application/octet-stream',
+    },
+    body: await file.arrayBuffer(),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({})) as { error?: string }
+    throw new ApiError(res.status, body.error ?? `上传失败 (HTTP ${res.status})`)
+  }
+}
+
+/** Download one workspace file as a blob and trigger a browser save. */
+export async function downloadWorkspaceFile(relativePath: string, name: string): Promise<void> {
+  const token = storedToken()
+  const res = await fetch(`/api/workspace/file?path=${encodeURIComponent(relativePath)}&download=1`, {
+    headers: token === null ? {} : { authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) throw new ApiError(res.status, `下载失败 (HTTP ${res.status})`)
+  const url = URL.createObjectURL(await res.blob())
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = name
+  document.body.append(anchor)
+  anchor.click()
+  anchor.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
