@@ -362,4 +362,42 @@ describe('enterprise agent cockpit portal (Option B)', () => {
       expect(doc.querySelectorAll('.active-thought-container').length).toBe(0)
     })
   }, 20_000)
+
+  it('instantly mounts thought container upon prompt submit and clears empty placeholder on pure message', async () => {
+    const hub = new PortalFakeHub()
+    const server = await startCockpitStack(hub)
+    const dom = await openCockpit(server)
+    const doc = dom.window.document
+
+    await vi.waitFor(() => { expect(dom.window.__agentCockpit).toBeDefined() })
+    login(doc, MEMBER_TOKEN)
+
+    await vi.waitFor(() => {
+      expect(doc.getElementById('workspace-layout')!.hidden).toBe(false)
+    })
+
+    const input = doc.getElementById('chat-input') as HTMLTextAreaElement
+    input.value = 'Pure query without reasoning'
+    const sendBtn = doc.getElementById('send-btn') as HTMLButtonElement
+    sendBtn.click()
+
+    // Prompt submitted: verify thought placeholder container is immediately mounted before any runtime event
+    await vi.waitFor(() => {
+      const activeThought = doc.querySelector('.active-thought-container')
+      expect(activeThought).not.toBeNull()
+      expect(activeThought?.textContent).toContain('DeepSeek 深度思考中...')
+    })
+
+    // Pure agent message chunk arrives without any thought chunk: placeholder must be cleanly removed
+    hub.emitUpdate('sess-portal-1', {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'Direct reply from model.' },
+    })
+
+    await vi.waitFor(() => {
+      // Empty placeholder thought container should be safely removed without leaving empty shells
+      expect(doc.querySelector('.thought-container')).toBeNull()
+      expect(doc.querySelector('.message-agent')?.textContent).toContain('Direct reply from model.')
+    })
+  }, 20_000)
 })

@@ -161,8 +161,7 @@
   }
 
   // UI: Thought Flow (Cherry Studio Style)
-  function renderThoughtChunk(fullText) {
-    if (!fullText || !fullText.trim()) return
+  function createOrGetThoughtContainer(isThinking = true) {
     let container = document.querySelector('.active-thought-container')
     if (!container) {
       container = document.createElement('div')
@@ -171,12 +170,12 @@
         <div class="thought-header">
           <div class="thought-header-left">
             <span class="thought-arrow">▶</span>
-            <span class="thought-pulse"></span>
-            <span class="thought-title">DeepSeek 深度思考中...</span>
+            ${isThinking ? '<span class="thought-pulse"></span>' : ''}
+            <span class="thought-title">${isThinking ? 'DeepSeek 深度思考中...' : '已深度思考'}</span>
           </div>
           <span class="thought-toggle-text">展开全部</span>
         </div>
-        <div class="thought-content"></div>
+        <div class="thought-content">${isThinking ? '<span class="thought-placeholder">正在梳理执行逻辑与任务规划...</span>' : ''}</div>
       `
       const header = container.querySelector('.thought-header')
       const toggleText = container.querySelector('.thought-toggle-text')
@@ -185,8 +184,14 @@
         toggleText.textContent = isExpanded ? '收起' : '展开全部'
       }
       $('chat-messages').appendChild(container)
+      scrollChatBottom(true)
     }
+    return container
+  }
 
+  function renderThoughtChunk(fullText) {
+    if (!fullText || !fullText.trim()) return
+    const container = createOrGetThoughtContainer(true)
     const content = container.querySelector('.thought-content')
     if (content) {
       content.textContent = fullText
@@ -204,9 +209,23 @@
       if (pulse) pulse.remove()
       const title = container.querySelector('.thought-title')
       const content = container.querySelector('.thought-content')
-      const charCount = content?.textContent?.length || 0
+      const toggleText = container.querySelector('.thought-toggle-text')
+
+      const hasPlaceholder = content?.querySelector('.thought-placeholder')
+      const rawText = (content?.textContent || '').trim()
+
+      if (hasPlaceholder || !rawText || !state.currentThoughtText) {
+        container.remove()
+        return
+      }
+
+      const charCount = state.currentThoughtText.length || rawText.length
       if (title) {
         title.textContent = charCount > 0 ? `已深度思考 (${charCount} 字)` : '已深度思考'
+      }
+      if (container.classList.contains('expanded')) {
+        container.classList.remove('expanded')
+        if (toggleText) toggleText.textContent = '展开全部'
       }
     })
     state.currentThoughtText = ''
@@ -367,9 +386,13 @@
     }
   }
 
-  function scrollChatBottom() {
+  function scrollChatBottom(force = false) {
     const el = $('chat-messages')
-    el.scrollTop = el.scrollHeight
+    if (!el) return
+    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120
+    if (force || isNearBottom) {
+      el.scrollTop = el.scrollHeight
+    }
   }
 
   // Sessions Management
@@ -559,6 +582,7 @@
     state.lastUserPrompt = text
     appendUserMessage(text)
     finishCurrentTurn()
+    createOrGetThoughtContainer(true)
 
     try {
       await api(`/api/session/${encodeURIComponent(state.activeSessionId)}/prompt`, {
@@ -568,9 +592,9 @@
       // Prompt completed, refresh files list
       await loadWorkspaceFiles()
     } catch (e) {
+      finalizeThoughts()
       renderAgentChunk(`\n> ⚠️ 执行错误: ${e.message}`, false)
     } finally {
-      finishCurrentTurn()
       setBusy(false)
     }
   }

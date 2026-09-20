@@ -469,40 +469,31 @@ body {
 }
 
 .thought-content {
-  padding: 8px 12px 14px 12px;
-  background: #ffffff;
+  padding: 10px 14px;
+  background: #fcfdfe;
   border-top: 1px solid var(--border-subtle);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.6;
-  color: #475569;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: #1e293b;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 90px; /* 默认固定显示部分 */
+  max-height: 96px; /* 默认固定显示部分 */
   overflow: hidden;
-  position: relative;
   transition: max-height 0.25s ease-out;
 }
 
-/* 默认未展开时底部渐变淡出遮罩 */
-.thought-container:not(.expanded) .thought-content::after {
-  content: "";
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 24px;
-  background: linear-gradient(to bottom, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.95));
-  pointer-events: none;
+.thought-placeholder {
+  color: #94a3b8;
+  font-style: italic;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .thought-container.expanded .thought-content {
-  max-height: 600px;
+  max-height: 520px;
   overflow-y: auto;
-}
-
-.thought-container.expanded .thought-content::after {
-  display: none;
 }
 
 /* Streaming cursor */
