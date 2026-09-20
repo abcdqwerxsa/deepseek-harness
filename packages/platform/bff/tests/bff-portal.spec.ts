@@ -32,9 +32,13 @@ beforeAll(async () => {
       request: async <T>(method: string): Promise<T> => {
         throw new Error(`unexpected ACP call in portal smoke spec: ${method}`)
       },
-      onUpdate: () => {},
+      onUpdate: () => () => {},
       onPermission: () => {},
+      get lastUsedAt(): number {
+        return Date.now()
+      },
       dispose: async () => {},
+      exited: () => new Promise<void>(() => {}),
     }),
   })
   base = `http://127.0.0.1:${String(server.port)}`
