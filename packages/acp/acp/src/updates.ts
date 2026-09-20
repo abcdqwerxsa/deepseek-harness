@@ -85,7 +85,7 @@ export async function toolResultUpdate(
 }
 
 /** Report current context occupancy only when DSH has both usage and capacity facts. */
-function usageUpdate(
+export function usageUpdate(
   ctx: Context,
   session: Session,
   event: SessionEvent<'assistant/message'>,

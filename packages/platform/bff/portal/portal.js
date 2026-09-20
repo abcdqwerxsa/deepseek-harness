@@ -164,9 +164,11 @@
 
   // UI: Thought Flow (Cherry Studio Style)
   function createOrGetThoughtContainer(isThinking = true) {
-    let container = document.querySelector('.active-thought-container')
+    const doc = typeof document !== 'undefined' ? document : null
+    if (!doc) return null
+    let container = doc.querySelector('.active-thought-container')
     if (!container) {
-      container = document.createElement('div')
+      container = doc.createElement('div')
       container.className = `thought-container active-thought-container active-thought-card ${isThinking ? 'expanded' : ''}`
       container.innerHTML = `
         <div class="thought-header">
@@ -186,7 +188,8 @@
         const isExpanded = container.classList.toggle('expanded')
         toggleText.textContent = isExpanded ? '收起' : '展开全部'
       }
-      $('chat-messages').appendChild(container)
+      const chatMessages = $('chat-messages')
+      if (chatMessages) chatMessages.appendChild(container)
       scrollChatBottom(true)
     }
     return container
@@ -195,6 +198,7 @@
   function renderThoughtChunk(fullText) {
     if (!fullText || !fullText.trim()) return
     const container = createOrGetThoughtContainer(true)
+    if (!container) return
     const content = container.querySelector('.thought-content')
     if (content) {
       const wasNearBottom = content.scrollHeight - content.scrollTop - content.clientHeight < 40
@@ -207,7 +211,9 @@
   }
 
   function finalizeThoughts() {
-    document.querySelectorAll('.active-thought-container, .active-thought-card').forEach((container) => {
+    const doc = typeof document !== 'undefined' ? document : null
+    if (!doc) return
+    doc.querySelectorAll('.active-thought-container, .active-thought-card').forEach((container) => {
       container.classList.remove('active-thought-container', 'active-thought-card')
       const pulse = container.querySelector('.thought-pulse')
       if (pulse) pulse.remove()
@@ -215,15 +221,16 @@
       const content = container.querySelector('.thought-content')
       const toggleText = container.querySelector('.thought-toggle-text')
 
-      const hasPlaceholder = content?.querySelector('.thought-placeholder')
+      const hasPlaceholder = Boolean(content?.querySelector('.thought-placeholder'))
       const rawText = (content?.textContent || '').trim()
+      const isOnlyPlaceholder = hasPlaceholder && (!rawText || rawText.includes('正在梳理执行逻辑与任务规划'))
 
-      if (hasPlaceholder || !rawText || !state.currentThoughtText) {
+      if (!rawText || isOnlyPlaceholder) {
         container.remove()
         return
       }
 
-      const charCount = state.currentThoughtText.length || rawText.length
+      const charCount = (state.currentThoughtText && state.currentThoughtText.length) || rawText.length
       if (title) {
         title.textContent = charCount > 0 ? `已深度思考 (${charCount} 字)` : '已深度思考'
       }
@@ -240,11 +247,18 @@
       clearInterval(state.typewriterTimer)
       state.typewriterTimer = null
     }
-    const body = document.querySelector('.active-agent-body')
-    if (body && state.typewriterTargetText) {
-      body.innerHTML = formatMarkdown(state.typewriterTargetText)
+    const doc = typeof document !== 'undefined' ? document : null
+    if (!doc) return
+    const body = doc.querySelector('.active-agent-body')
+    if (body) {
+      const text = state.currentAgentText || state.typewriterTargetText
+      if (text) {
+        body.innerHTML = formatMarkdown(text)
+      }
+      const cursor = body.querySelector('.typing-cursor')
+      if (cursor) cursor.remove()
     }
-    document.querySelectorAll('.active-agent-body').forEach(e => e.classList.remove('active-agent-body'))
+    doc.querySelectorAll('.active-agent-body').forEach(e => e.classList.remove('active-agent-body'))
     state.currentAgentText = ''
     state.typewriterTargetText = ''
     state.typewriterRenderedLen = 0
@@ -297,7 +311,7 @@
     loadWorkspaceFiles().catch(() => {})
   }
 
-  // UI: Agent message chunk with smooth streaming
+  // UI: Agent message chunk with real-time streaming
   function renderAgentChunk(fullText, isReplay = false) {
     finalizeThoughts()
     let body = document.querySelector('.active-agent-body')
@@ -317,8 +331,10 @@
       state.typewriterRenderedLen = fullText.length
       body.innerHTML = formatMarkdown(fullText)
     } else {
-      startTypewriter(body)
+      state.typewriterRenderedLen = fullText.length
+      body.innerHTML = formatMarkdown(fullText) + '<span class="typing-cursor"></span>'
     }
+    scrollChatBottom()
   }
 
   function startTypewriter(body) {
@@ -612,10 +628,8 @@
     } finally {
       state.turnEnded = true
       finalizeThoughts()
-      if (!state.typewriterTimer) {
-        finishCurrentAgentBody()
-        setBusy(false)
-      }
+      finishCurrentAgentBody()
+      setBusy(false)
     }
   }
 

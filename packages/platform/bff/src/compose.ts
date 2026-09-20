@@ -152,6 +152,7 @@ function prepareTenantSandbox(
     HOME: tenantDir,
     DSH_HOME: homeDir,
     DSH_TELEMETRY_DISABLED: '1',
+    DSH_ACP_LIVE_STREAM: '1',
     DEEPSEEK_API_KEY: options.apiKey,
   }
   if (process.env.LANG !== undefined) env.LANG = process.env.LANG

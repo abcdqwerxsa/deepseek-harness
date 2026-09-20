@@ -79,6 +79,8 @@ export interface AcpConfig {
   model?: string
   /** Maximum summaries returned by one session/list page. */
   sessionListPageSize?: number
+  /** Emit transient assistant stream deltas as live session updates. */
+  liveStream?: boolean
   /** Runtime-only transport override; production uses stdio. */
   stream?: Stream
 }
@@ -87,6 +89,7 @@ export const Config: Schema<AcpConfig> = Schema.object({
   provider: Schema.string(),
   model: Schema.string(),
   sessionListPageSize: Schema.natural().min(1).default(DEFAULT_SESSION_LIST_PAGE_SIZE),
+  liveStream: Schema.boolean().default(false),
 })
 
 /**
@@ -100,6 +103,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
   const persistence = ctx.sessionPersistence
   const logger = ctx.logger
   const sessionListPageSize = resolveSessionListPageSize(config.sessionListPageSize)
+  const liveStream = config.liveStream === true || process.env.DSH_ACP_LIVE_STREAM === '1'
   const sessions = new Map<SessionId, AcpSession>()
   const activating = new Set<SessionId>()
   let closed = false
@@ -140,6 +144,12 @@ export function apply(ctx: Context, config: AcpConfig): void {
   ctx.on('agent/inbox/claimed', ({ agent, message, turn }) => {
     ownedRecord(agent)?.onInboxClaimed(message, turn)
   })
+
+  if (liveStream) {
+    ctx.on('agent/assistant-stream', ({ agent, frame }) => {
+      ownedRecord(agent)?.onAssistantStream(frame)
+    })
+  }
 
   ctx.on('agent/error', ({ agent, turn, error }) => {
     ownedRecord(agent)?.onAgentError(turn, error)
@@ -211,6 +221,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
           fallbackSelection: initialSelection(config),
           signal,
           notify,
+          liveStream,
         })
       } catch (error: unknown) {
         if (error instanceof AcpMcpConfigError) throw invalidParams(error.message)
@@ -262,6 +273,7 @@ export function apply(ctx: Context, config: AcpConfig): void {
             fallbackSelection: initialSelection(config),
             signal,
             notify,
+            liveStream,
           })
         } catch (error: unknown) {
           if (error instanceof AcpMcpConfigError) throw invalidParams(error.message)

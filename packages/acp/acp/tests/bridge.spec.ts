@@ -1002,4 +1002,42 @@ describe('automation-only ACP bridge', () => {
       .rejects.toThrow(/unknown session/)
     await expect(harness.client.cancel({ sessionId: 'missing' })).resolves.toBeUndefined()
   })
+
+  it('emits live reasoning and message deltas as transient stream updates when liveStream is enabled', async () => {
+    harness = await makeBridgeHarness({
+      config: { liveStream: true },
+      script: [[
+        { type: 'block-start', index: 0, blockType: 'reasoning' },
+        { type: 'reasoning-delta', index: 0, text: 'think 1 ' },
+        { type: 'reasoning-delta', index: 0, text: 'think 2' },
+        { type: 'block-end', index: 0, block: { type: 'reasoning', text: 'think 1 think 2' } },
+        { type: 'block-start', index: 1, blockType: 'text' },
+        { type: 'text-delta', index: 1, text: 'hello ' },
+        { type: 'text-delta', index: 1, text: 'world' },
+        { type: 'block-end', index: 1, block: { type: 'text', text: 'hello world' } },
+        { type: 'usage', usage: { inputTokens: 10, outputTokens: 20 } },
+        { type: 'finish', reason: { kind: 'stop' } },
+      ]],
+    })
+    await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    const { sessionId } = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+    const result = await harness.client.prompt({
+      sessionId,
+      prompt: [{ type: 'text', text: 'stream test' }],
+    })
+    expect(result.stopReason).toBe('end_turn')
+    await vi.waitFor(() => { expect(harness!.updates.at(-1)?.sessionUpdate).toBe('usage_update') })
+    const updates = harness.updates
+    expect(updates.map(u => u.sessionUpdate)).toEqual([
+      'agent_thought_chunk',
+      'agent_thought_chunk',
+      'agent_message_chunk',
+      'agent_message_chunk',
+      'usage_update',
+    ])
+    expect(updates[0]).toMatchObject({ sessionUpdate: 'agent_thought_chunk', content: { text: 'think 1 ' } })
+    expect(updates[1]).toMatchObject({ sessionUpdate: 'agent_thought_chunk', content: { text: 'think 2' } })
+    expect(updates[2]).toMatchObject({ sessionUpdate: 'agent_message_chunk', content: { text: 'hello ' } })
+    expect(updates[3]).toMatchObject({ sessionUpdate: 'agent_message_chunk', content: { text: 'world' } })
+  })
 })

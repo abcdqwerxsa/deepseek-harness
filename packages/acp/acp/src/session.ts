@@ -10,14 +10,14 @@ import {
   type SessionNotification,
   type StopReason,
 } from '@agentclientprotocol/sdk'
-import type { Agent, AgentHandle, AgentOptions, ModelSelection } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentHandle, AgentOptions, AssistantStreamFrame, ModelSelection } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, errorChain, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { type Session, type SessionEvent, type SessionId, type TurnEndReason } from '@deepseek-ai/dsh-session'
 import { AcpContentError, admitAcpPrompt } from './content.ts'
 import { turnEndToStopReason } from './codec.ts'
 import { mountAcpMcpServers } from './mcp.ts'
 import { AcpModelControl } from './model-control.ts'
-import { assistantUpdates, toolCallUpdate, toolResultUpdate } from './updates.ts'
+import { assistantUpdates, toolCallUpdate, toolResultUpdate, usageUpdate } from './updates.ts'
 
 /** The continuable-subagent teardown used without depending on the subagent package. */
 interface ContinuableDrain {
@@ -33,6 +33,7 @@ interface AcpSessionBuildOptions {
   fallbackSelection: ModelSelection | undefined
   signal: AbortSignal
   notify: (notification: SessionNotification) => Promise<void>
+  liveStream?: boolean
 }
 
 /** Fresh ACP session construction inputs. */
@@ -103,15 +104,21 @@ export class AcpSession {
   private inflight: InflightPrompt | undefined
   private closing: Promise<void> | undefined
   private readonly pendingSelections = new Map<string, ModelSelection>()
+  private readonly attemptToStep = new Map<string, string>()
+  private readonly streamedSteps = new Set<string>()
+
+  readonly liveStream: boolean
 
   private constructor(
     private readonly ctx: Context,
     handle: AgentHandle,
     modelControl: AcpModelControl,
     private readonly notify: (notification: SessionNotification) => Promise<void>,
+    liveStream = false,
   ) {
     this.agent = handle.agent
     this.modelControl = modelControl
+    this.liveStream = liveStream
     this.disposeAgent = () => handle.dispose()
   }
 
@@ -135,7 +142,7 @@ export class AcpSession {
         await mountAcpMcpServers(agentCtx, options.mcpServers, options.cwd)
       },
     })
-    return new AcpSession(ctx, handle, modelControl, options.notify)
+    return new AcpSession(ctx, handle, modelControl, options.notify, options.liveStream)
   }
 
   /**
@@ -165,7 +172,7 @@ export class AcpSession {
       throw internalError('session/resume did not compose model selection')
     }
     /* v8 ignore stop */
-    return new AcpSession(ctx, handle, modelControl, options.notify)
+    return new AcpSession(ctx, handle, modelControl, options.notify, options.liveStream)
   }
 
   /**
@@ -338,6 +345,56 @@ export class AcpSession {
   }
 
   /**
+   * Process one process-local live assistant streaming frame and emit real-time updates.
+   * @param frame - live stream publication frame from agent-loop.
+   */
+  onAssistantStream(frame: AssistantStreamFrame): void {
+    if (!this.liveStream) return
+    if (frame.type === 'start') {
+      this.attemptToStep.set(frame.attemptId, `${frame.turn}:${frame.step}`)
+      return
+    }
+    if (frame.type === 'chunk') {
+      if (frame.chunk.type === 'reasoning-delta' && frame.chunk.text.length > 0) {
+        const stepKey = this.attemptToStep.get(frame.attemptId)
+        if (stepKey !== undefined) this.streamedSteps.add(stepKey)
+        const text = frame.chunk.text
+        const previous = this.outputTail
+        this.outputTail = previous
+          .then(() => this.notify({
+            sessionId: this.agent.session.id,
+            update: {
+              sessionUpdate: 'agent_thought_chunk',
+              content: { type: 'text', text },
+            },
+          }))
+          .catch((error: unknown) => {
+            this.ctx.logger.warn(`acp: assistant stream thought delivery failed: ${errorChain(error)}`)
+          })
+        return
+      }
+      if (frame.chunk.type === 'text-delta' && frame.chunk.text.length > 0) {
+        const stepKey = this.attemptToStep.get(frame.attemptId)
+        if (stepKey !== undefined) this.streamedSteps.add(stepKey)
+        const text = frame.chunk.text
+        const previous = this.outputTail
+        this.outputTail = previous
+          .then(() => this.notify({
+            sessionId: this.agent.session.id,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text },
+            },
+          }))
+          .catch((error: unknown) => {
+            this.ctx.logger.warn(`acp: assistant stream message delivery failed: ${errorChain(error)}`)
+          })
+        return
+      }
+    }
+  }
+
+  /**
    * Process one durable event and enqueue its standard ACP projections.
    * @param session - exact event-owning Session.
    * @param event - committed durable event.
@@ -347,9 +404,18 @@ export class AcpSession {
       if (event.type === 'assistant/message') {
         const inflight = this.inflight?.turn === event.data.turn ? this.inflight : undefined
         const previous = this.outputTail
+        const stepKey = `${event.data.turn}:${event.data.step}`
+        const alreadyStreamed = this.streamedSteps.has(stepKey)
         const delivery = previous.then(async () => {
-          for (const update of await assistantUpdates(this.ctx, session, event)) {
-            await this.notify({ sessionId: this.agent.session.id, update })
+          if (alreadyStreamed) {
+            const usage = usageUpdate(this.ctx, session, event)
+            if (usage !== undefined) {
+              await this.notify({ sessionId: this.agent.session.id, update: usage })
+            }
+          } else {
+            for (const update of await assistantUpdates(this.ctx, session, event)) {
+              await this.notify({ sessionId: this.agent.session.id, update })
+            }
           }
         })
         this.outputTail = delivery.catch((error: unknown) => {
@@ -384,7 +450,15 @@ export class AcpSession {
       if (inflight !== undefined && event.type === 'turn/end' && inflight.turn === event.data.turn) {
         inflight.endReason = event.data.reason
       }
-      if (event.type === 'turn/end') this.modelControl.releaseTurn(event.data.turn)
+      if (event.type === 'turn/end') {
+        this.modelControl.releaseTurn(event.data.turn)
+        for (const [attemptId, key] of this.attemptToStep.entries()) {
+          if (key.startsWith(`${event.data.turn}:`)) {
+            this.attemptToStep.delete(attemptId)
+            this.streamedSteps.delete(key)
+          }
+        }
+      }
     }
   }
 

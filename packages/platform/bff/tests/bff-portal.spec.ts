@@ -617,4 +617,105 @@ describe('enterprise agent cockpit portal (Option B)', () => {
       expect(doc.querySelector('.thought-title')?.textContent).toContain('已深度思考 (35 字)')
     })
   }, 20_000)
+
+  it('preserves previous turn thoughts and isolates new thought stream across multiple conversation turns', async () => {
+    const hub = new PortalFakeHub()
+    let resolvePrompt: ((res: { stopReason: string }) => void) | undefined
+    hub.promptHandler = () => new Promise<{ stopReason: string }>((resolve) => {
+      resolvePrompt = resolve
+    })
+
+    const server = await startCockpitStack(hub)
+    const dom = await openCockpit(server, '', hub)
+    const doc = dom.window.document
+
+    await vi.waitFor(() => { expect(dom.window.__agentCockpit).toBeDefined() })
+    login(doc, MEMBER_TOKEN)
+    await vi.waitFor(() => { expect(doc.getElementById('workspace-layout')!.hidden).toBe(false) })
+
+    // === TURN 1 ===
+    ;(doc.getElementById('chat-input') as HTMLTextAreaElement).value = 'Question 1: analyze data'
+    doc.getElementById('send-btn')!.click()
+
+    await vi.waitFor(() => {
+      expect(dom.window.__agentCockpit.state.activeSessionId).toBe('sess-portal-1')
+      expect(resolvePrompt).toBeDefined()
+      expect(doc.querySelectorAll('.thought-container').length).toBe(1)
+    })
+    const resolve1 = resolvePrompt!
+    resolvePrompt = undefined
+
+    // Turn 1 Thought stream
+    hub.emitUpdate('sess-portal-1', {
+      sessionUpdate: 'agent_thought_chunk',
+      content: { type: 'text', text: 'Thinking about question 1...' },
+    })
+
+    // Turn 1 Message stream
+    hub.emitUpdate('sess-portal-1', {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'Answer 1 completed.' },
+    })
+
+    resolve1({ stopReason: 'end_turn' })
+    await vi.waitFor(() => {
+      expect(dom.window.__agentCockpit.state.isBusy).toBe(false)
+      const thoughts = doc.querySelectorAll('.thought-container')
+      expect(thoughts.length).toBe(1)
+      expect(thoughts[0]?.querySelector('.thought-title')?.textContent).toContain('已深度思考')
+      expect(thoughts[0]?.querySelector('.thought-content')?.textContent).toBe('Thinking about question 1...')
+    })
+
+    // === TURN 2 (The exact user bug: asking a second question must NOT wipe out Turn 1 thought) ===
+    ;(doc.getElementById('chat-input') as HTMLTextAreaElement).value = 'Question 2: follow up logic'
+    doc.getElementById('send-btn')!.click()
+
+    await vi.waitFor(() => {
+      expect(resolvePrompt).toBeDefined()
+      // Turn 1 thought must be strictly preserved, Turn 2 thought container mounted
+      const thoughts = doc.querySelectorAll('.thought-container')
+      expect(thoughts.length).toBe(2)
+      // Turn 1 remains archived
+      expect(thoughts[0]?.querySelector('.thought-title')?.textContent).toContain('已深度思考')
+      expect(thoughts[0]?.querySelector('.thought-content')?.textContent).toBe('Thinking about question 1...')
+      // Turn 2 is active with placeholder / pulse
+      expect(thoughts[1]?.classList.contains('active-thought-container')).toBe(true)
+      expect(thoughts[1]?.querySelector('.thought-pulse')).not.toBeNull()
+    })
+    const resolve2 = resolvePrompt!
+    resolvePrompt = undefined
+
+    // Turn 2 Thought stream
+    hub.emitUpdate('sess-portal-1', {
+      sessionUpdate: 'agent_thought_chunk',
+      content: { type: 'text', text: 'Thinking about question 2 in real-time...' },
+    })
+
+    await vi.waitFor(() => {
+      const thoughts = doc.querySelectorAll('.thought-container')
+      expect(thoughts[1]?.querySelector('.thought-content')?.textContent).toBe('Thinking about question 2 in real-time...')
+    })
+
+    // Turn 2 Message stream
+    hub.emitUpdate('sess-portal-1', {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'Answer 2 completed.' },
+    })
+
+    resolve2({ stopReason: 'end_turn' })
+    await vi.waitFor(() => {
+      expect(dom.window.__agentCockpit.state.isBusy).toBe(false)
+      const thoughts = doc.querySelectorAll('.thought-container')
+      expect(thoughts.length).toBe(2)
+      // Both thoughts must be intact and finalized!
+      expect(thoughts[0]?.querySelector('.thought-content')?.textContent).toBe('Thinking about question 1...')
+      expect(thoughts[1]?.querySelector('.thought-content')?.textContent).toBe('Thinking about question 2 in real-time...')
+      expect(thoughts[0]?.querySelector('.thought-title')?.textContent).toContain('已深度思考')
+      expect(thoughts[1]?.querySelector('.thought-title')?.textContent).toContain('已深度思考')
+      // Turn 1 can be toggled by user to view details
+      const t1Toggle = thoughts[0]?.querySelector('.thought-header') as HTMLElement
+      t1Toggle.click()
+      expect(thoughts[0]?.classList.contains('expanded')).toBe(true)
+    })
+  }, 20_000)
 })
