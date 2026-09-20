@@ -21,7 +21,7 @@ export interface TenantPrincipal {
   /**
    * Composite storage and runtime key `${deptId}/${userId}`: the directory
    * under the tenants root and the sandbox identity every subsystem
-   * (orchestrator, web runtimes, transcript) keys by.
+   * (orchestrator, transcript) keys by.
    */
   readonly tenantId: string
 }

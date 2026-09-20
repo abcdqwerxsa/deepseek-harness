@@ -1,5 +1,5 @@
 ---
-description: "Thin BFF for the multi-tenant platform: department/user bearer-token auth with three roles, ACP REST passthrough through the orchestrator, per-user original-UI subpath proxying over on-demand sandboxed dsh web runtimes, a role-aware admin console, and a SQLite transcript store."
+description: "Thin BFF for the single-tenant intranet platform: department/user bearer-token auth with user/admin roles, ACP REST passthrough through the orchestrator, a same-origin portal SPA, and a SQLite transcript store."
 kind: "package-library"
 ---
 
@@ -15,7 +15,7 @@ Use `@deepseek-ai/dsh-platform-bff` as the serving layer between departments' us
 
 - Import as a library and call `startPlatformServer(options)`; it listens on 127.0.0.1 with an OS-assigned port by default — an internal deployment puts its own TLS gateway in front.
 - Auth is the shipped `devTokenAuthenticator` (static token→`(deptId, userId, role)` map) or any `Authenticator` implementation; HTTP uses `Authorization: Bearer`, WebSocket upgrades use `?token=`. Roles: `user` (own sandbox only), `admin` (console views: own department's directory, usage, audit, plus the instance overview and any `?dept=` drill-down).
-- REST: `GET /api/whoami`, `GET /api/sessions`, `POST /api/session/new {cwd}`, `POST /api/session/:id/prompt {text}` (blocks until the turn ends), `POST /api/session/:id/close`, `POST /api/session/:id/resume {cwd}`, `GET /api/session/:id/transcript`, `GET /api/usage` (update-stream aggregates), `GET /api/audit` (this user's trail); governance: `GET /api/dept/{members,usage,audit}?dept=` (dept-admin: own department, `?dept=` ignored; platform-admin: any safe-segment department) and `GET /api/admin/overview` (platform-admin).
+- REST: `GET /api/whoami`, `GET /api/sessions`, `POST /api/session/new {cwd}`, `POST /api/session/:id/prompt {text}` (blocks until the turn ends), `POST /api/session/:id/close`, `POST /api/session/:id/resume {cwd}`, `GET /api/session/:id/transcript`, `GET /api/usage` (update-stream aggregates), `GET /api/audit` (this user's trail); governance: `GET /api/dept/{members,usage,audit}?dept=` (admin: own department by default, `?dept=` selects any safe-segment department) and `GET /api/admin/overview` (admin).
 - WebSocket `/ws?token=` receives `{type:'session-update'}` and `{type:'permission-request'}`; send `{type:'permission-response', id, response}` to answer.
 - OIDC against an upstream IdP is deliberately not implemented yet: implement `Authenticator` against your IdP's token verification when the deployment has one.
 

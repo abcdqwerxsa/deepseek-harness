@@ -1,5 +1,5 @@
 ---
-description: "多租户平台的薄 BFF：部门/用户三级角色的 bearer-token 认证、经编排器的 ACP REST 透传、按需沙箱化 dsh web 的每用户原版 UI 子路径反代、角色感知管理控制台，以及 SQLite transcript 存储。"
+description: "单租户内网平台的薄 BFF：部门/用户两级角色（user/admin）的 bearer-token 认证、经编排器的 ACP REST 透传、同源门户 SPA，以及 SQLite transcript 存储。"
 kind: "package-library"
 ---
 

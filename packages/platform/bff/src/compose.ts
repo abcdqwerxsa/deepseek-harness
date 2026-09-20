@@ -98,7 +98,6 @@ function prepareTenantSandbox(
     homeDir: join(options.tenantsRoot, deptId, userId, 'home'),
     workspaceDir: join(options.tenantsRoot, deptId, userId, 'workspace'),
     dshVersion: options.dshVersion,
-    profileName,
     ...(options.forceReprovision === true ? { force: true } : {}),
   })
   if (options.settingsYaml !== undefined) {
@@ -108,9 +107,9 @@ function prepareTenantSandbox(
   const wrapper = (options.isolationCommand ?? []).map(part => part.replaceAll('{tenantDir}', tenantDir))
   // Deliberately minimal child environment: the tenant child never sees the
   // BFF's own variables (tokens, future secrets) — only what dsh needs.
-  // HOME anchors at the user's tree root (not the dsh data home) so the web
-  // UI's workspace directory browser starts one level up and lists BOTH the
-  // dsh home and the workspace directory; DSH_HOME stays the data home.
+  // HOME anchors at the user's tree root (not the dsh data home) so a
+  // directory browser starts one level up and lists BOTH the dsh home and
+  // the workspace directory; DSH_HOME stays the data home.
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
     HOME: tenantDir,

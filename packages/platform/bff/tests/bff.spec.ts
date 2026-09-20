@@ -188,6 +188,49 @@ describe('platform BFF', () => {
     expect(calls).toEqual(['session/new', 'session/resume', 'session/setConfigOption'])
   })
 
+  it('gates the console surface on the admin role with safe-segment scoping', async () => {
+    const identAdmin = (userId: string, deptId: string, role: 'user' | 'admin') => ({ deptId, userId, role })
+    const server = await startPlatformServer({
+      authenticator: devTokenAuthenticator(new Map([
+        [TOKEN_A, ident('alpha')],
+        ['admin-token', identAdmin('lead', 'core', 'admin')],
+      ])),
+      createRuntime: async tenantId => ({
+        tenantId,
+        request: async <T>(method: string): Promise<T> => {
+          throw new Error(`spec fake: ${method}`)
+        },
+        onUpdate: () => () => {},
+        onPermission: () => {},
+        get lastUsedAt(): number {
+          return Date.now()
+        },
+        dispose: async () => {},
+        exited: () => new Promise<void>(() => {}),
+      }),
+    })
+    cleanupFns.push(() => server.close())
+
+    // Regular users get neither the dept console nor the overview.
+    expect((await api(server, TOKEN_A, '/api/dept/members')).status).toBe(403)
+    expect((await api(server, TOKEN_A, '/api/admin/overview')).status).toBe(404)
+
+    // Admin defaults to their own department.
+    const own = await (await api(server, 'admin-token', '/api/dept/members')).json() as { deptId: string; members: unknown[] }
+    expect(own.deptId).toBe('core')
+    expect(Array.isArray(own.members)).toBe(true)
+
+    // Admin may drill into any other safe-segment department...
+    expect((await api(server, 'admin-token', '/api/dept/members?dept=other')).status).toBe(200)
+    // ...but unsafe segments stay rejected (the GLOB query's invariant).
+    expect((await api(server, 'admin-token', '/api/dept/members?dept=..')).status).toBe(403)
+    expect((await api(server, 'admin-token', '/api/dept/members?dept=co*')).status).toBe(403)
+
+    const overview = await api(server, 'admin-token', '/api/admin/overview')
+    expect(overview.status).toBe(200)
+    expect(await overview.json()).toHaveProperty('departments')
+  })
+
   it('registers the authoritative cwd on explicit resume and keeps prompting', async () => {
     // Legacy sessions (created before the registry existed) enter through the
     // documented resume route; the recorded cwd must keep later prompts
