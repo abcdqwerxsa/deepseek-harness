@@ -165,7 +165,7 @@
     let container = document.querySelector('.active-thought-container')
     if (!container) {
       container = document.createElement('div')
-      container.className = 'thought-container active-thought-container active-thought-card'
+      container.className = `thought-container active-thought-container active-thought-card ${isThinking ? 'expanded' : ''}`
       container.innerHTML = `
         <div class="thought-header">
           <div class="thought-header-left">
@@ -173,13 +173,14 @@
             ${isThinking ? '<span class="thought-pulse"></span>' : ''}
             <span class="thought-title">${isThinking ? 'DeepSeek 深度思考中...' : '已深度思考'}</span>
           </div>
-          <span class="thought-toggle-text">展开全部</span>
+          <span class="thought-toggle-text">${isThinking ? '收起' : '展开全部'}</span>
         </div>
         <div class="thought-content">${isThinking ? '<span class="thought-placeholder">正在梳理执行逻辑与任务规划...</span>' : ''}</div>
       `
       const header = container.querySelector('.thought-header')
       const toggleText = container.querySelector('.thought-toggle-text')
       header.onclick = () => {
+        container.dataset.userToggled = 'true'
         const isExpanded = container.classList.toggle('expanded')
         toggleText.textContent = isExpanded ? '收起' : '展开全部'
       }
@@ -196,7 +197,10 @@
     if (content) {
       content.textContent = fullText
       if (container.classList.contains('expanded')) {
-        content.scrollTop = content.scrollHeight
+        const isNearBottom = content.scrollHeight - content.scrollTop - content.clientHeight < 40
+        if (isNearBottom) {
+          content.scrollTop = content.scrollHeight
+        }
       }
     }
     scrollChatBottom()
@@ -223,7 +227,7 @@
       if (title) {
         title.textContent = charCount > 0 ? `已深度思考 (${charCount} 字)` : '已深度思考'
       }
-      if (container.classList.contains('expanded')) {
+      if (!container.dataset.userToggled && container.classList.contains('expanded')) {
         container.classList.remove('expanded')
         if (toggleText) toggleText.textContent = '展开全部'
       }
@@ -312,6 +316,10 @@
     if (isReplay) {
       state.typewriterRenderedLen = fullText.length
       body.innerHTML = formatMarkdown(fullText)
+      body.classList.remove('active-agent-body')
+      state.currentAgentText = ''
+      state.typewriterTargetText = ''
+      state.typewriterRenderedLen = 0
     } else {
       startTypewriter(body)
     }
@@ -327,6 +335,10 @@
         clearInterval(state.typewriterTimer)
         state.typewriterTimer = null
         body.innerHTML = formatMarkdown(target)
+        body.classList.remove('active-agent-body')
+        state.currentAgentText = ''
+        state.typewriterTargetText = ''
+        state.typewriterRenderedLen = 0
         scrollChatBottom()
         return
       }
@@ -558,6 +570,11 @@
     input.value = ''
     setBusy(true)
 
+    state.lastUserPrompt = text
+    appendUserMessage(text)
+    finishCurrentTurn()
+    createOrGetThoughtContainer(true)
+
     // Lazy session creation: only initialize session and backend runtime when user sends first prompt
     if (!state.activeSessionId) {
       const welcome = document.querySelector('.welcome-screen')
@@ -572,17 +589,13 @@
         state.sessions.unshift({ sessionId: res.sessionId, cwd: res.cwd })
         renderSessionList()
       } catch (e) {
+        finalizeThoughts()
         input.value = text // Restore prompt so user does not lose input
         alert('启动任务失败: ' + e.message)
         setBusy(false)
         return
       }
     }
-
-    state.lastUserPrompt = text
-    appendUserMessage(text)
-    finishCurrentTurn()
-    createOrGetThoughtContainer(true)
 
     try {
       await api(`/api/session/${encodeURIComponent(state.activeSessionId)}/prompt`, {
@@ -595,6 +608,10 @@
       finalizeThoughts()
       renderAgentChunk(`\n> ⚠️ 执行错误: ${e.message}`, false)
     } finally {
+      finalizeThoughts()
+      if (!state.typewriterTimer) {
+        finishCurrentAgentBody()
+      }
       setBusy(false)
     }
   }
@@ -698,7 +715,10 @@
     } catch (e) {
       alert('上传文件失败: ' + e.message)
     } finally {
-      finishCurrentTurn()
+      finalizeThoughts()
+      if (!state.typewriterTimer) {
+        finishCurrentAgentBody()
+      }
       setBusy(false)
     }
   }

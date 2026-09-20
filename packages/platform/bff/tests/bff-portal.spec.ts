@@ -36,6 +36,7 @@ afterEach(async () => {
 class PortalFakeHub {
   permissionHandler: ((request: unknown) => Promise<unknown>) | undefined
   updateListener: ((sessionId: string, update: unknown) => void) | undefined
+  promptHandler: (() => Promise<unknown>) | undefined
   createdSessions: string[] = []
   emitUpdate(sessionId: string, update: unknown): void {
     this.updateListener?.(sessionId, update)
@@ -60,7 +61,12 @@ async function startCockpitStack(hub?: PortalFakeHub): Promise<PlatformServer> {
           if (hub) hub.createdSessions.push(sid)
           return { sessionId: sid } as T
         }
-        if (method === 'session/prompt') return { stopReason: 'end_turn' } as T
+        if (method === 'session/prompt') {
+          if (hub?.promptHandler) {
+            return await hub.promptHandler() as T
+          }
+          return { stopReason: 'end_turn' } as T
+        }
         return {} as T
       },
       onUpdate: (listener) => {
@@ -229,13 +235,15 @@ describe('enterprise agent cockpit portal (Option B)', () => {
     const thoughtContainer = doc.querySelector('.thought-container')!
     const thoughtHeader = thoughtContainer.querySelector('.thought-header') as HTMLElement
     const toggleText = thoughtContainer.querySelector('.thought-toggle-text') as HTMLElement
-    expect(toggleText.textContent).toBe('展开全部')
-    expect(thoughtContainer.classList.contains('expanded')).toBe(false)
-    thoughtHeader.click()
+    // While thinking, container is expanded by default to ensure real-time visibility
     expect(thoughtContainer.classList.contains('expanded')).toBe(true)
     expect(toggleText.textContent).toBe('收起')
     thoughtHeader.click()
     expect(thoughtContainer.classList.contains('expanded')).toBe(false)
+    expect(toggleText.textContent).toBe('展开全部')
+    thoughtHeader.click()
+    expect(thoughtContainer.classList.contains('expanded')).toBe(true)
+    expect(toggleText.textContent).toBe('收起')
 
     // Emit agent message chunk to verify thoughts auto-finalize with char count
     hub.emitUpdate('sess-portal-1', {
@@ -365,6 +373,8 @@ describe('enterprise agent cockpit portal (Option B)', () => {
 
   it('instantly mounts thought container upon prompt submit and clears empty placeholder on pure message', async () => {
     const hub = new PortalFakeHub()
+    let resolvePrompt: ((val: unknown) => void) | undefined
+    hub.promptHandler = () => new Promise((resolve) => { resolvePrompt = resolve })
     const server = await startCockpitStack(hub)
     const dom = await openCockpit(server)
     const doc = dom.window.document
@@ -381,11 +391,14 @@ describe('enterprise agent cockpit portal (Option B)', () => {
     const sendBtn = doc.getElementById('send-btn') as HTMLButtonElement
     sendBtn.click()
 
-    // Prompt submitted: verify thought placeholder container is immediately mounted before any runtime event
+    // Prompt submitted (pending): verify session initialized and thought placeholder mounted
     await vi.waitFor(() => {
+      expect(dom.window.__agentCockpit.state.activeSessionId).toBe('sess-portal-1')
       const activeThought = doc.querySelector('.active-thought-container')
       expect(activeThought).not.toBeNull()
       expect(activeThought?.textContent).toContain('DeepSeek 深度思考中...')
+      expect(activeThought?.classList.contains('expanded')).toBe(true)
+      expect(doc.querySelector('.thought-pulse')).not.toBeNull()
     })
 
     // Pure agent message chunk arrives without any thought chunk: placeholder must be cleanly removed
@@ -398,6 +411,64 @@ describe('enterprise agent cockpit portal (Option B)', () => {
       // Empty placeholder thought container should be safely removed without leaving empty shells
       expect(doc.querySelector('.thought-container')).toBeNull()
       expect(doc.querySelector('.message-agent')?.textContent).toContain('Direct reply from model.')
+    })
+
+    // Complete the prompt turn cleanly
+    resolvePrompt!({ stopReason: 'end_turn' })
+    await vi.waitFor(() => {
+      expect(dom.window.__agentCockpit.state.isBusy).toBe(false)
+    })
+  }, 20_000)
+
+  it('safely recycles placeholder on early end_turn without chunks and finalizes pure thought streams', async () => {
+    const hub = new PortalFakeHub()
+    const server = await startCockpitStack(hub)
+    const dom = await openCockpit(server)
+    const doc = dom.window.document
+
+    await vi.waitFor(() => { expect(dom.window.__agentCockpit).toBeDefined() })
+    login(doc, MEMBER_TOKEN)
+
+    await vi.waitFor(() => {
+      expect(doc.getElementById('workspace-layout')!.hidden).toBe(false)
+    })
+
+    // Subcase 1: Prompt completes with 0 chunks (empty turn) -> placeholder must not leak as a zombie card
+    const input = doc.getElementById('chat-input') as HTMLTextAreaElement
+    input.value = 'Turn with empty return'
+    const sendBtn = doc.getElementById('send-btn') as HTMLButtonElement
+    sendBtn.click()
+
+    // When the prompt finishes without chunks, finally block recycles placeholder
+    await vi.waitFor(() => {
+      expect(dom.window.__agentCockpit.state.isBusy).toBe(false)
+      expect(doc.querySelector('.thought-container')).toBeNull()
+    })
+
+    // Subcase 2: Pure thought stream (model outputs thought chunks only, no message chunks)
+    input.value = 'Pure reasoning only'
+    sendBtn.click()
+
+    await vi.waitFor(() => {
+      expect(doc.querySelector('.active-thought-container')).not.toBeNull()
+    })
+
+    hub.emitUpdate('sess-portal-1', {
+      sessionUpdate: 'agent_thought_chunk',
+      content: { type: 'text', text: 'Internal chain of thought planning...' },
+    })
+
+    await vi.waitFor(() => {
+      const thoughtContent = doc.querySelector('.thought-content')
+      expect(thoughtContent?.textContent).toContain('Internal chain of thought planning...')
+    })
+
+    // Prompt resolves with pure thought: container must be finalized to "已深度思考" and pulse removed
+    await vi.waitFor(() => {
+      expect(dom.window.__agentCockpit.state.isBusy).toBe(false)
+      const thoughtTitle = doc.querySelector('.thought-title')
+      expect(thoughtTitle?.textContent).toContain('已深度思考')
+      expect(doc.querySelector('.thought-pulse')).toBeNull()
     })
   }, 20_000)
 })
