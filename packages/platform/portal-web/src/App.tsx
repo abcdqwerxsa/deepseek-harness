@@ -1,10 +1,15 @@
 import { useEffect, useState } from 'react'
 import { apiClient, storedToken, storeToken, type Principal } from './api'
 import { Chat } from './Chat'
+import { Icon } from './icons'
+import { applyTheme, chooseTheme, currentTheme, type Theme } from './theme'
 
 export function App() {
   const [token, setToken] = useState<string | null>(storedToken())
   const [principal, setPrincipal] = useState<Principal | null>(null)
+  const [theme, setTheme] = useState<Theme>(currentTheme)
+
+  useEffect(() => { applyTheme(theme) }, [theme])
 
   useEffect(() => {
     if (token === null) return
@@ -23,6 +28,12 @@ export function App() {
       key={token}
       token={token}
       principal={principal}
+      theme={theme}
+      onToggleTheme={() => {
+        const next: Theme = theme === 'dark' ? 'light' : 'dark'
+        setTheme(next)
+        chooseTheme(next)
+      }}
       onLogout={() => { storeToken(null); setToken(null); setPrincipal(null) }}
     />
   )
@@ -53,7 +64,7 @@ function Login({ onLogin }: { onLogin: (token: string) => void }) {
   return (
     <div className="login-wrap">
       <form className="login-card" onSubmit={(e) => { e.preventDefault(); void submit() }}>
-        <div className="login-logo">⬢</div>
+        <div className="login-logo"><Icon name="hexagon" size={30} /></div>
         <h1>企业智能体工作台</h1>
         <p className="login-sub">DeepSeek Harness · 内网部署</p>
         <input

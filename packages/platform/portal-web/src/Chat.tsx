@@ -5,7 +5,9 @@ import { TurnView } from './blocks'
 import { ModelPicker } from './ModelPicker'
 import { PermissionCard } from './PermissionCard'
 import { FilePanel } from './FilePanel'
-import { AdminPanel } from './AdminPanel'
+import { AdminConsole, CONSOLE_TABS, type ConsoleTab } from './AdminConsole'
+import { Icon, type IconName } from './icons'
+import type { Theme } from './theme'
 
 type Action =
   | { type: 'update'; update: SessionUpdate }
@@ -32,9 +34,11 @@ interface WsMessage {
   readonly request?: unknown
 }
 
-export function Chat({ token, principal, onLogout }: {
+export function Chat({ token, principal, theme, onToggleTheme, onLogout }: {
   token: string
   principal: Principal
+  theme: Theme
+  onToggleTheme: () => void
   onLogout: () => void
 }) {
   const [sessions, setSessions] = useState<readonly SessionInfo[]>([])
@@ -46,7 +50,9 @@ export function Chat({ token, principal, onLogout }: {
   const [configOptions, setConfigOptions] = useState<readonly ConfigOption[] | null>(null)
   const [permissions, setPermissions] = useState<readonly { id: string; request: PermissionRequest }[]>([])
   const [filesRefresh, setFilesRefresh] = useState(0)
-  const [adminOpen, setAdminOpen] = useState(false)
+  // 'chat' or the active console tab; the WS stays connected across views so a
+  // running task keeps streaming while the console is open.
+  const [view, setView] = useState<'chat' | ConsoleTab>('chat')
 
   const activeRef = useRef<string | null>(null)
   activeRef.current = activeId
@@ -141,7 +147,7 @@ export function Chat({ token, principal, onLogout }: {
   useEffect(() => {
     void apiClient.sessions().then((data) => {
       setSessions(data.sessions)
-    }).catch(err => {
+    }).catch((err) => {
       // An expired session must leave the dead shell, not linger in it.
       if (err instanceof ApiError && err.status === 401) onLogout()
     })
@@ -151,6 +157,7 @@ export function Chat({ token, principal, onLogout }: {
     setActiveId(sessionId)
     activeRef.current = sessionId
     stickRef.current = true
+    setView('chat')
     setConfigOptions(null)
     setPermissions([])
     dispatch({ type: 'reset' })
@@ -160,6 +167,7 @@ export function Chat({ token, principal, onLogout }: {
   const startDraft = useCallback(() => {
     setActiveId(null)
     activeRef.current = null
+    setView('chat')
     setConfigOptions(null)
     setPermissions([])
     dispatch({ type: 'reset' })
@@ -220,7 +228,7 @@ export function Chat({ token, principal, onLogout }: {
     if (el !== null && stickRef.current) {
       requestAnimationFrame(() => { if (stickRef.current && el.isConnected) el.scrollTop = el.scrollHeight })
     }
-  }, [chat])
+  }, [chat, view])
 
   const activeSession = useMemo(
     () => sessions.find(s => s.sessionId === activeId) ?? null,
@@ -230,11 +238,51 @@ export function Chat({ token, principal, onLogout }: {
   return (
     <div className="shell">
       <aside className="sidebar">
-        <div className="sidebar-head">
-          <span className="brand">⬢ 智能体工作台</span>
-          <span className={`conn ${connected ? 'on' : 'off'}`}>{connected ? '● 在线' : '○ 连接中'}</span>
+        <div className="brand-row">
+          <span className="brand-chip"><Icon name="hexagon" size={15} /></span>
+          <span className="brand-text">智能体工作台</span>
+          <button
+            className="icon-btn theme-toggle"
+            title={theme === 'dark' ? '切换为浅色' : '切换为深色'}
+            aria-label={theme === 'dark' ? '切换为浅色主题' : '切换为深色主题'}
+            onClick={onToggleTheme}
+          >
+            <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={15} />
+          </button>
         </div>
-        <button className="new-task" onClick={startDraft}>＋ 新建任务</button>
+        <span className={`conn ${connected ? 'on' : 'off'}`}>
+          <span className="conn-dot" />{connected ? '在线' : '连接中'}
+        </span>
+        <button className="new-task" onClick={startDraft}>
+          <Icon name="plus" size={15} />新建任务
+        </button>
+        <nav className="side-nav">
+          <span className="nav-section">工作区</span>
+          <button
+            className={`nav-item ${view === 'chat' ? 'active' : ''}`}
+            onClick={() => setView('chat')}
+          >
+            <Icon name="message-square" size={15} />工作台
+            {view !== 'chat' && permissions.length > 0 && (
+              <span className="nav-pending" title={`${permissions.length} 个待处理授权`}>{permissions.length}</span>
+            )}
+          </button>
+          {principal.role !== 'user' && (
+            <>
+              <span className="nav-section">管理控制台</span>
+              {CONSOLE_TABS.map(t => (
+                <button
+                  key={t.id}
+                  className={`nav-item ${view === t.id ? 'active' : ''}`}
+                  onClick={() => setView(t.id)}
+                >
+                  <Icon name={t.icon} size={15} />{t.label}
+                </button>
+              ))}
+            </>
+          )}
+          <span className="nav-section">最近任务</span>
+        </nav>
         <div className="session-list">
           {sessions.map(s => (
             <button
@@ -249,78 +297,85 @@ export function Chat({ token, principal, onLogout }: {
           ))}
           {sessions.length === 0 && <div className="session-empty">暂无历史任务</div>}
         </div>
-        <div className="sidebar-foot">
-          <div className="who">
-            <span className="who-dept">{principal.deptId}</span>
-            <span className="who-user">{principal.userId}</span>
-          </div>
-          <button className="logout" onClick={onLogout}>退出</button>
+        <div className="user-card">
+          <span className="user-avatar">{principal.userId.slice(0, 1).toUpperCase()}</span>
+          <span className="user-meta">
+            <span className="user-name">{principal.userId}</span>
+            <span className="user-dept">{principal.deptId}</span>
+          </span>
+          <button className="icon-btn" title="退出登录" aria-label="退出登录" onClick={onLogout}>
+            <Icon name="log-out" size={15} />
+          </button>
         </div>
-        {principal.role !== 'user' && (
-          <button className="admin-entry" onClick={() => setAdminOpen(true)}>⚙ 管理控制台</button>
-        )}
       </aside>
 
-      <main className="main">
-        <header className="main-head">
-          <span className="task-name">{activeSession !== null ? activeSession.sessionId.slice(0, 12) : '新任务'}</span>
-          <ModelPicker sessionId={activeId} configOptions={configOptions} onApplied={(sid, options) => { if (activeRef.current === sid) setConfigOptions(options) }} />
-          {posting && <span className="posting">执行中…</span>}
-        </header>
-        <div className="workspace-row">
-          <div className="main-col">
-            <div className="stream" ref={streamRef} onScroll={onScroll}>
-              {chat.turns.length === 0 && activeId === null && <Welcome onPick={setDraft} />}
-              {chat.turns.map(turn => <TurnView key={turn.id} turn={turn} />)}
-              {permissions.map(entry => (
-                <PermissionCard
-                  key={entry.id}
-                  request={entry.request}
-                  onAnswer={outcome => answerPermission(entry.id, outcome)}
+      {view === 'chat' ? (
+        <main className="main">
+          <header className="main-head">
+            <span className="task-name">{activeSession !== null ? activeSession.sessionId.slice(0, 12) : '新任务'}</span>
+            <ModelPicker
+              sessionId={activeId}
+              configOptions={configOptions}
+              onApplied={(sid, options) => { if (activeRef.current === sid) setConfigOptions(options) }}
+            />
+            {posting && <span className="posting">执行中…</span>}
+          </header>
+          <div className="workspace-row">
+            <div className="main-col">
+              <div className="stream" ref={streamRef} onScroll={onScroll}>
+                {chat.turns.length === 0 && activeId === null && <Welcome onPick={setDraft} />}
+                {chat.turns.map(turn => <TurnView key={turn.id} turn={turn} />)}
+                {permissions.map(entry => (
+                  <PermissionCard
+                    key={entry.id}
+                    request={entry.request}
+                    onAnswer={outcome => answerPermission(entry.id, outcome)}
+                  />
+                ))}
+              </div>
+              <footer className="composer">
+                <textarea
+                  value={draft}
+                  placeholder="描述你的任务…（Enter 发送，Shift+Enter 换行）"
+                  rows={3}
+                  onChange={e => setDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      void sendPrompt()
+                    }
+                  }}
                 />
-              ))}
+                <button className="send" disabled={posting || draft.trim() === ''} onClick={() => void sendPrompt()}>
+                  {posting ? '执行中…' : '发送'}
+                </button>
+              </footer>
             </div>
-            <footer className="composer">
-          <textarea
-            value={draft}
-            placeholder="描述你的任务…（Enter 发送，Shift+Enter 换行）"
-            rows={3}
-            onChange={e => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
-                void sendPrompt()
-              }
-            }}
-          />
-          <button className="send" disabled={posting || draft.trim() === ''} onClick={() => void sendPrompt()}>
-            {posting ? '执行中…' : '发送'}
-          </button>
-          </footer>
+            <FilePanel refreshKey={filesRefresh} onRefresh={() => setFilesRefresh(key => key + 1)} />
           </div>
-          <FilePanel refreshKey={filesRefresh} onRefresh={() => setFilesRefresh(key => key + 1)} />
-        </div>
-      </main>
-      {adminOpen && <AdminPanel principal={principal} onClose={() => setAdminOpen(false)} />}
+        </main>
+      ) : (
+        <AdminConsole principal={principal} tab={view} />
+      )}
     </div>
   )
 }
 
 function Welcome({ onPick }: { onPick: (text: string) => void }) {
-  const examples: [string, string, string][] = [
-    ['📂', '检查当前工作区与环境', '列出当前工作区的所有文件，并告诉我环境信息'],
-    ['📊', '数据分析脚本', '编写一个处理 CSV 数据的 Python 脚本，提取关键统计指标'],
-    ['⚙️', '检查可用工具', '检查可用工具和 MCP 服务集成状态'],
+  const examples: [IconName, string, string][] = [
+    ['folder-open', '检查当前工作区与环境', '列出当前工作区的所有文件，并告诉我环境信息'],
+    ['bar-chart-3', '数据分析脚本', '编写一个处理 CSV 数据的 Python 脚本，提取关键统计指标'],
+    ['wrench', '检查可用工具', '检查可用工具和 MCP 服务集成状态'],
   ]
   return (
     <div className="welcome">
-      <div className="welcome-icon">⬢</div>
+      <div className="welcome-icon"><Icon name="hexagon" size={26} /></div>
       <h2>新建智能体任务</h2>
       <p>任务在专属沙箱环境中执行。输入数据分析、自动化脚本或业务需求，首个消息发出时自动创建任务。</p>
       <div className="welcome-examples">
         {examples.map(([icon, title, prompt]) => (
           <button key={title} onClick={() => onPick(prompt)}>
-            <span>{icon}</span> {title}
+            <Icon name={icon} size={15} /> {title}
           </button>
         ))}
       </div>

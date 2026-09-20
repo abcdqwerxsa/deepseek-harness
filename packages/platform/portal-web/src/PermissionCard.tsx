@@ -1,4 +1,5 @@
 import type { PermissionRequest } from './api'
+import { Icon } from './icons'
 
 /**
  * Human-in-the-loop approval card. Answers travel over the portal WS in the
@@ -14,7 +15,7 @@ export function PermissionCard({ request, onAnswer }: {
 
   return (
     <div className="permission-card">
-      <div className="permission-title">⚠️ 审批：{summary}</div>
+      <div className="permission-title"><Icon name="shield" size={14} /> 审批：{summary}</div>
       <div className="permission-detail">{describe(request)}</div>
       <div className="permission-actions">
         <button className="deny" onClick={() => onAnswer({ outcome: 'cancelled' })}>拒绝</button>

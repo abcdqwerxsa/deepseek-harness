@@ -12,7 +12,10 @@ English | [中文](README.zh.md)
 `dsh-platform-portal-web` is the enterprise portal frontend: a React SPA served
 same-origin by the platform BFF. It renders each session as a stream of turns
 with collapsible thought cards, tool-call cards, and streamed markdown bodies,
-and replays transcripts through the same reducer as live updates. The build
+and replays transcripts through the same reducer as live updates. A full-page
+admin console (overview, members, usage, audit) replaces the former modal; the
+UI ships light and dark themes behind CSS custom properties, following the
+stored preference or the system scheme. The build
 emits exactly `index.html`, `portal.js`, and `portal.css` into
 [`../bff/portal`](../bff/portal), matching the BFF's fixed static-file map, so
 no BFF serving change is needed.
@@ -33,5 +36,11 @@ pnpm --filter @deepseek-ai/dsh-platform-portal-web run build
 ```
 
 The output replaces the BFF `portal/` directory contents. The event-reducer
-contract is covered by `tests/events.spec.ts`; the full-page JSDOM suite lives
-with the BFF package.
+contract is covered by `tests/events.client.spec.tsx`; the full-page JSDOM
+suite lives with the BFF package.
+
+## Known Limitations and Deferred Work
+
+- The admin console fetches members, usage, and audit in one `Promise.all`, so
+  a single endpoint failure blanks the whole console until retry. Degrading to
+  partial data per section (as the deleted modal drawer did) is deferred.

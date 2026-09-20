@@ -4,6 +4,17 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>DeepSeek Harness · 企业智能体工作台</title>
+  <script>
+    // Stamp the theme before the stylesheet matters: stored choice wins, else
+    // the OS scheme. main.tsx re-stamps the same value; no paint flash either way.
+    try {
+      var t = localStorage.getItem('dsh_theme')
+      if (t !== 'light' && t !== 'dark') {
+        t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+      }
+      document.documentElement.dataset.theme = t
+    } catch (e) { /* no storage: CSS light defaults hold */ }
+  </script>
   <script type="module" crossorigin src="./portal.js"></script>
   <link rel="stylesheet" crossorigin href="./portal.css">
 </head>

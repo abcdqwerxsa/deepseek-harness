@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { renderMarkdown } from './markdown'
+import { Icon } from './icons'
 import type { ToolCall, Turn } from './events'
 
 export function TurnView({ turn }: { turn: Turn }) {
@@ -11,7 +12,9 @@ export function TurnView({ turn }: { turn: Turn }) {
         if (block.type === 'body') return <BodyView key={i} text={block.text} done={block.done} />
         return <ToolCard key={`${block.call.id}-${i}`} call={block.call} />
       })}
-      {turn.error !== undefined && <div className="error-note">⚠️ {turn.error}</div>}
+      {turn.error !== undefined && (
+        <div className="error-note"><Icon name="warning" size={14} /> {turn.error}</div>
+      )}
     </div>
   )
 }
