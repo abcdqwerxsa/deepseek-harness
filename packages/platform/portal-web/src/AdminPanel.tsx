@@ -20,7 +20,7 @@ export function AdminPanel({ principal, onClose }: { principal: Principal; onClo
     const fail = (err: unknown) => { if (!cancelled) setError(err instanceof Error ? err.message : String(err)) }
     void apiClient.deptMembers(principal.deptId).then(r => { if (!cancelled) setMembers(r.members) }, fail)
     void apiClient.deptUsage(principal.deptId).then(r => { if (!cancelled) setUsage(r) }, fail)
-    void apiClient.deptAudit(principal.deptId).then(r => { if (!cancelled) setAudit(r.events ?? []) }, fail)
+    void apiClient.deptAudit(principal.deptId).then(r => { if (!cancelled) setAudit(r) }, fail)
     if (isPlatformAdmin) void apiClient.adminOverview().then(r => { if (!cancelled) setOverview(r) }, fail)
     return () => { cancelled = true }
   }, [principal.deptId, isPlatformAdmin])
@@ -85,8 +85,8 @@ export function AdminPanel({ principal, onClose }: { principal: Principal; onClo
           <div className="admin-audit">
             {audit.slice(0, 30).map((event, i) => (
               <div key={i} className="admin-audit-row">
-                <span><b>{event.userId ?? ''}</b> {event.action ?? ''} {event.detail ?? ''}</span>
-                <span className="admin-audit-time">{formatTime(event.timestamp)}</span>
+                <span><b>{userOf(event.tenantId, principal.deptId)}</b> {event.event} {event.detail ?? ''}</span>
+                <span className="admin-audit-time">{formatTime(event.at)}</span>
               </div>
             ))}
             {audit.length === 0 && <div className="admin-empty">暂无审计记录</div>}
@@ -97,8 +97,13 @@ export function AdminPanel({ principal, onClose }: { principal: Principal; onClo
   )
 }
 
-function formatTime(timestamp: number | string | undefined): string {
-  if (timestamp === undefined) return ''
-  const date = typeof timestamp === 'number' ? new Date(timestamp) : new Date(timestamp)
-  return Number.isNaN(date.getTime()) ? String(timestamp) : date.toLocaleTimeString()
+function formatTime(timestamp: string): string {
+  // Epoch-millis strings come from older rows; ISO strings parse directly.
+  const date = /^\d+$/.test(timestamp) ? new Date(Number(timestamp)) : new Date(timestamp)
+  return Number.isNaN(date.getTime()) ? timestamp : date.toLocaleTimeString()
+}
+
+/** The audit trail keys rows by `deptId/userId`; show the user part. */
+function userOf(tenantId: string, deptId: string): string {
+  return tenantId.startsWith(`${deptId}/`) ? tenantId.slice(deptId.length + 1) : tenantId
 }

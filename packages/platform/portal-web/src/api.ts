@@ -42,6 +42,12 @@ export interface ConfigOption {
   })[]
 }
 
+/** Keep only object entries with a string id; the catalog is agent-fed. */
+export function configOptionsOf(raw: readonly unknown[]): readonly ConfigOption[] {
+  return raw.filter((entry): entry is ConfigOption =>
+    typeof entry === 'object' && entry !== null && typeof (entry as ConfigOption).id === 'string')
+}
+
 export interface PermissionOption {
   readonly id: string
   readonly name: string
@@ -65,10 +71,10 @@ export interface DeptUsage {
 }
 
 export interface AuditEvent {
-  readonly userId?: string
-  readonly action?: string
-  readonly detail?: string
-  readonly timestamp?: number | string
+  readonly at: string
+  readonly tenantId: string
+  readonly event: string
+  readonly detail?: string | null
 }
 
 export class ApiError extends Error {
@@ -138,7 +144,7 @@ export const apiClient = {
     api<DeptUsage>(`/api/dept/usage?dept=${encodeURIComponent(deptId)}`),
 
   deptAudit: (deptId: string) =>
-    api<{ events?: readonly AuditEvent[] }>(`/api/dept/audit?dept=${encodeURIComponent(deptId)}`),
+    api<readonly AuditEvent[]>(`/api/dept/audit?dept=${encodeURIComponent(deptId)}`),
 
   adminOverview: () =>
     api<{ departments: readonly { deptId: string; users: number }[]; acp: { live: number } }>(`/api/admin/overview`),

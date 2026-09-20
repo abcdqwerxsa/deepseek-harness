@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { apiClient, type ConfigOption, type ConfigOptionEntry } from './api'
+import { apiClient, configOptionsOf, type ConfigOption } from './api'
 
 interface FlatModel {
   readonly value: string
@@ -31,7 +31,7 @@ function flatModels(option: ConfigOption): readonly FlatModel[] {
 export function ModelPicker({ sessionId, configOptions, onApplied }: {
   sessionId: string | null
   configOptions: readonly ConfigOption[] | null
-  onApplied: (options: readonly ConfigOption[]) => void
+  onApplied: (sessionId: string, options: readonly ConfigOption[]) => void
 }) {
   const models = useMemo(() => {
     const option = configOptions?.find(option => option.id === 'model')
@@ -47,7 +47,7 @@ export function ModelPicker({ sessionId, configOptions, onApplied }: {
     setBusy(true)
     try {
       const res = await apiClient.sessionConfig(sessionId, 'model', value)
-      onApplied(res.configOptions ?? [])
+      onApplied(sessionId, res.configOptions === undefined ? [] : configOptionsOf(res.configOptions))
     } catch {
       /* a failed switch keeps the current selection; the next catalog
          refresh (config_option_update) re-syncs the picker */

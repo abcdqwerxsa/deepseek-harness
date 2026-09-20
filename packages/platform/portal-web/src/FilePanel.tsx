@@ -31,6 +31,7 @@ export function FilePanel({ refreshKey, onRefresh }: { refreshKey: number; onRef
     if (file === undefined) return
     try {
       await uploadWorkspaceFile(file)
+      setError('')
       const data = await apiClient.workspaceFiles()
       setFiles(data.files)
     } catch (err) {
@@ -59,7 +60,7 @@ export function FilePanel({ refreshKey, onRefresh }: { refreshKey: number; onRef
         <button
           key={file.relativePath}
           className="file-card"
-          onClick={() => { void downloadWorkspaceFile(file.relativePath, file.name) }}
+          onClick={() => { downloadWorkspaceFile(file.relativePath, file.name).catch(err => setError(err instanceof Error ? err.message : String(err))) }}
           title={file.relativePath}
         >
           <span className="file-name">{file.name}</span>

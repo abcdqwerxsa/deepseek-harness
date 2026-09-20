@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
-import { ApiError, apiClient, type ConfigOption, type PermissionRequest, type Principal, type SessionInfo } from './api'
+import { ApiError, apiClient, configOptionsOf, type ConfigOption, type PermissionRequest, type Principal, type SessionInfo } from './api'
 import { applyUpdate, emptyChat, finishTurn, fromRows, setTurnError, type ChatState, type SessionUpdate } from './events'
 import { TurnView } from './blocks'
 import { ModelPicker } from './ModelPicker'
@@ -96,7 +96,7 @@ export function Chat({ token, principal, onLogout }: {
     let closed = false
     let ws: WebSocket | undefined
     const connect = () => {
-      const ws = new WebSocket(`${protocol}//${location.host}/ws?token=${encodeURIComponent(token)}`)
+      ws = new WebSocket(`${protocol}//${location.host}/ws?token=${encodeURIComponent(token)}`)
       sendRef.current = ws
       ws.onopen = () => {
         setConnected(true)
@@ -106,12 +106,15 @@ export function Chat({ token, principal, onLogout }: {
         try {
           const msg = JSON.parse(String(event.data)) as WsMessage
           if (msg.type === 'permission-request' && typeof msg.id === 'string') {
-            setPermissions(prev => [...prev, { id: msg.id as string, request: (msg.request ?? {}) as PermissionRequest }])
+            // The BFF replays every pending request on reconnect; dedupe by id.
+            setPermissions(prev => prev.some(entry => entry.id === msg.id)
+              ? prev
+              : [...prev, { id: msg.id as string, request: (msg.request ?? {}) as PermissionRequest }])
           }
           if (msg.type === 'session-update' && msg.sessionId === activeRef.current && msg.update !== undefined) {
             if (resyncingRef.current) staleRef.current = true
             if (msg.update.sessionUpdate === 'config_option_update' && msg.update.configOptions !== undefined) {
-              setConfigOptions(msg.update.configOptions as readonly ConfigOption[])
+              setConfigOptions(configOptionsOf(msg.update.configOptions))
             }
             dispatch({ type: 'update', update: msg.update })
           }
@@ -175,7 +178,7 @@ export function Chat({ token, principal, onLogout }: {
         sessionId = sid
         setActiveId(sid)
         activeRef.current = sid
-        setConfigOptions(created.configOptions ?? null)
+        setConfigOptions(created.configOptions === undefined ? null : configOptionsOf(created.configOptions))
         setSessions(prev => [{ sessionId: sid, cwd: created.cwd }, ...prev])
       }
       // The user bubble arrives via the WS echo the BFF broadcasts — no
@@ -261,7 +264,7 @@ export function Chat({ token, principal, onLogout }: {
       <main className="main">
         <header className="main-head">
           <span className="task-name">{activeSession !== null ? activeSession.sessionId.slice(0, 12) : '新任务'}</span>
-          <ModelPicker sessionId={activeId} configOptions={configOptions} onApplied={setConfigOptions} />
+          <ModelPicker sessionId={activeId} configOptions={configOptions} onApplied={(sid, options) => { if (activeRef.current === sid) setConfigOptions(options) }} />
           {posting && <span className="posting">执行中…</span>}
         </header>
         <div className="workspace-row">
