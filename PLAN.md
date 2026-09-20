@@ -67,9 +67,8 @@
 - [x] Spike：dsh ACP `setConfigOption` 模型键支持。**结论**：通道全通——`configId:"model"`，value=`JSON.stringify([provider,model])`；`session/new`/`resume`/`setConfigOption` 响应均携带完整 `configOptions` 目录，变更推 `config_option_update` 更新（`packages/acp/acp/src/model-control.ts`、`index.ts:237/295/352`）。选择在 prompt 准入时快照、整轮固定 = 轮次间切换语义，与决策 5 吻合。BFF 只需薄转发，无需解析模型路由。
 - [x] Phase 0：现存门户流式/思考 bug 清单 → React 版验收清单（`plans/portal-web-phase0-bugs.md`，15 项：P0×6 轮次边界/流式渲染/断线丢事件，P1×4，P2×5）
 - [x] M2：portal-web 脚手架 + 登录/会话列表/聊天流（流式、思考折叠、工具卡片）——`packages/platform/portal-web/`（React 18 + vite 6 + TS strict；纯 reducer `src/events.ts` 修 6 项 P0；定长三文件产物 BFF 零改动；reducer spec 9 用例 + BFF 静态契约 spec 替换旧 776 行 JSDOM 套件）
-- [ ] M3a：审批卡 + 工作区文件面板 + 模型切换器
-- [ ] M3b：管理台视图（用户/部门/用量/审计）迁移
-- [ ] M3c：BFF 增量端点（setConfigOption 转发）
+- [x] M3a：审批卡 + 工作区文件面板 + 模型切换器（含 BFF `/api/session/:id/config` 转发端点，即原 M3c 一并完成）
+- [x] M3b：管理台视图（用户/部门/用量/审计）迁移（对现有三级 API，非 member 即可见；M4 拍平时同步收敛）
 - [ ] M4：角色拍平 + 双 UI 线删除 + base-path 回退
 - [ ] M5：部署链接入 + 测试迁移 + 端到端验收
 

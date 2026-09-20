@@ -52,6 +52,25 @@ export interface PermissionRequest {
   readonly [key: string]: unknown
 }
 
+export interface DeptMember {
+  readonly userId: string
+  readonly role?: string
+}
+
+export interface DeptUsage {
+  readonly users?: readonly {
+    readonly userId: string
+    readonly totals: { readonly sessions: number; readonly messages: number; readonly toolCalls: number }
+  }[]
+}
+
+export interface AuditEvent {
+  readonly userId?: string
+  readonly action?: string
+  readonly detail?: string
+  readonly timestamp?: number | string
+}
+
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
     super(message)
@@ -111,6 +130,18 @@ export const apiClient = {
     }),
 
   workspaceFiles: () => api<{ files: readonly FileInfo[] }>('/api/workspace/files'),
+
+  deptMembers: (deptId: string) =>
+    api<{ deptId: string; members: readonly DeptMember[] }>(`/api/dept/members?dept=${encodeURIComponent(deptId)}`),
+
+  deptUsage: (deptId: string) =>
+    api<DeptUsage>(`/api/dept/usage?dept=${encodeURIComponent(deptId)}`),
+
+  deptAudit: (deptId: string) =>
+    api<{ events?: readonly AuditEvent[] }>(`/api/dept/audit?dept=${encodeURIComponent(deptId)}`),
+
+  adminOverview: () =>
+    api<{ departments: readonly { deptId: string; users: number }[]; acp: { live: number } }>(`/api/admin/overview`),
 }
 
 /** Upload one file into the workspace root (binary body, bearer auth). */

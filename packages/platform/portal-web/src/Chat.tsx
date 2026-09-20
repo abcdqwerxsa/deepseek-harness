@@ -5,6 +5,7 @@ import { TurnView } from './blocks'
 import { ModelPicker } from './ModelPicker'
 import { PermissionCard } from './PermissionCard'
 import { FilePanel } from './FilePanel'
+import { AdminPanel } from './AdminPanel'
 
 type Action =
   | { type: 'update'; update: SessionUpdate }
@@ -45,6 +46,7 @@ export function Chat({ token, principal, onLogout }: {
   const [configOptions, setConfigOptions] = useState<readonly ConfigOption[] | null>(null)
   const [permissions, setPermissions] = useState<readonly { id: string; request: PermissionRequest }[]>([])
   const [filesRefresh, setFilesRefresh] = useState(0)
+  const [adminOpen, setAdminOpen] = useState(false)
 
   const activeRef = useRef<string | null>(null)
   activeRef.current = activeId
@@ -251,6 +253,9 @@ export function Chat({ token, principal, onLogout }: {
           </div>
           <button className="logout" onClick={onLogout}>退出</button>
         </div>
+        {principal.role !== 'member' && (
+          <button className="admin-entry" onClick={() => setAdminOpen(true)}>⚙ 管理控制台</button>
+        )}
       </aside>
 
       <main className="main">
@@ -293,6 +298,7 @@ export function Chat({ token, principal, onLogout }: {
           <FilePanel refreshKey={filesRefresh} onRefresh={() => setFilesRefresh(key => key + 1)} />
         </div>
       </main>
+      {adminOpen && <AdminPanel principal={principal} onClose={() => setAdminOpen(false)} />}
     </div>
   )
 }
