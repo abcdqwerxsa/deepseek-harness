@@ -75,6 +75,7 @@ External packages installed for runtime use or distributed inside the prebuilt b
 | [`commander`](https://github.com/tj/commander.js) | MIT |
 | [`compression`](https://github.com/expressjs/compression) | MIT |
 | [`diff`](https://github.com/kpdecker/jsdiff) | BSD-3-Clause |
+| [`dompurify`](https://github.com/cure53/DOMPurify) | (MPL-2.0 OR Apache-2.0) |
 | [`electron-updater`](https://github.com/electron-userland/electron-builder) | MIT |
 | [`eventsource-parser`](https://github.com/rexxars/eventsource-parser) | MIT |
 | [`execa`](https://github.com/sindresorhus/execa) | MIT |
@@ -85,6 +86,7 @@ External packages installed for runtime use or distributed inside the prebuilt b
 | [`katex`](https://github.com/KaTeX/KaTeX) | MIT |
 | [`koffi`](https://github.com/Koromix/koffi) | MIT |
 | [`lexical`](https://github.com/facebook/lexical) | MIT |
+| [`marked`](https://github.com/markedjs/marked) | MIT |
 | [`mdast-util-from-markdown`](https://github.com/syntax-tree/mdast-util-from-markdown) | MIT |
 | [`mdast-util-gfm`](https://github.com/syntax-tree/mdast-util-gfm) | MIT |
 | [`mdast-util-math`](https://github.com/syntax-tree/mdast-util-math) | MIT |
