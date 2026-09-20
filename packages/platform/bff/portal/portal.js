@@ -16,6 +16,9 @@
     files: [],
     currentThoughtText: '',
     currentAgentText: '',
+    typewriterTimer: null,
+    typewriterTargetText: '',
+    typewriterRenderedLen: 0,
   }
 
   // API helper
@@ -146,43 +149,54 @@
     }
   }
 
-  // UI: Thought Flow
+  // UI: Thought Flow (Cherry Studio Style)
   function renderThoughtChunk(fullText) {
-    let thoughtCard = document.querySelector('.active-thought-card')
-    if (!thoughtCard) {
-      thoughtCard = document.createElement('div')
-      thoughtCard.className = 'thought-flow-card active-thought-card'
-      thoughtCard.innerHTML = `
+    let container = document.querySelector('.active-thought-container')
+    if (!container) {
+      container = document.createElement('div')
+      container.className = 'thought-container active-thought-container active-thought-card'
+      container.innerHTML = `
         <div class="thought-header">
-          <div class="thought-title">
-            <span>🧠</span>
-            <span>DeepSeek Thought Flow</span>
-            <span class="badge badge-blue">推理中...</span>
+          <div class="thought-header-left">
+            <span class="thought-arrow">▶</span>
+            <span class="thought-pulse"></span>
+            <span class="thought-title">DeepSeek 深度思考中...</span>
           </div>
-          <button class="btn btn-sm toggle-thought-btn" style="padding:2px 6px;">折叠/展开</button>
+          <span class="thought-toggle-text">展开全部</span>
         </div>
-        <div class="thought-steps-bar">
-          <div class="step-node"><span>1</span> 分析需求</div>
-          <span class="step-arrow">→</span>
-          <div class="step-node"><span>2</span> 知识/工具检索</div>
-          <span class="step-arrow">→</span>
-          <div class="step-node"><span>3</span> 运算与产出</div>
-        </div>
-        <div class="thought-detail" style="display:block;"></div>
+        <div class="thought-content"></div>
       `
-      thoughtCard.querySelector('.toggle-thought-btn').onclick = () => {
-        const detail = thoughtCard.querySelector('.thought-detail')
-        detail.style.display = detail.style.display === 'none' ? 'block' : 'none'
+      const header = container.querySelector('.thought-header')
+      const toggleText = container.querySelector('.thought-toggle-text')
+      header.onclick = () => {
+        const isExpanded = container.classList.toggle('expanded')
+        toggleText.textContent = isExpanded ? '收起' : '展开全部'
       }
-      $('chat-messages').appendChild(thoughtCard)
+      $('chat-messages').appendChild(container)
     }
 
-    const detail = thoughtCard.querySelector('.thought-detail')
-    if (detail) {
-      detail.textContent = fullText
-      detail.scrollTop = detail.scrollHeight
+    const content = container.querySelector('.thought-content')
+    if (content) {
+      content.textContent = fullText
+      if (container.classList.contains('expanded')) {
+        content.scrollTop = content.scrollHeight
+      }
     }
     scrollChatBottom()
+  }
+
+  function finalizeThoughts() {
+    document.querySelectorAll('.active-thought-container').forEach((container) => {
+      container.classList.remove('active-thought-container')
+      const pulse = container.querySelector('.thought-pulse')
+      if (pulse) pulse.remove()
+      const title = container.querySelector('.thought-title')
+      const content = container.querySelector('.thought-content')
+      const charCount = content?.textContent?.length || 0
+      if (title) {
+        title.textContent = `已深度思考 (${charCount} 字)`
+      }
+    })
   }
 
   // UI: Tool Call
@@ -230,8 +244,9 @@
     loadWorkspaceFiles().catch(() => {})
   }
 
-  // UI: Agent message chunk
+  // UI: Agent message chunk with smooth streaming
   function renderAgentChunk(fullText) {
+    finalizeThoughts()
     let body = document.querySelector('.active-agent-body')
     if (!body) {
       const msgWrapper = document.createElement('div')
@@ -240,9 +255,35 @@
       body.className = 'agent-body active-agent-body'
       msgWrapper.appendChild(body)
       $('chat-messages').appendChild(msgWrapper)
+      state.typewriterTargetText = ''
+      state.typewriterRenderedLen = 0
     }
-    body.innerHTML = formatMarkdown(fullText)
-    scrollChatBottom()
+
+    state.typewriterTargetText = fullText
+    startTypewriter(body)
+  }
+
+  function startTypewriter(body) {
+    if (state.typewriterTimer) return
+    state.typewriterTimer = setInterval(() => {
+      const target = state.typewriterTargetText
+      const currentLen = state.typewriterRenderedLen
+
+      if (currentLen >= target.length) {
+        clearInterval(state.typewriterTimer)
+        state.typewriterTimer = null
+        body.innerHTML = formatMarkdown(target)
+        scrollChatBottom()
+        return
+      }
+
+      const diff = target.length - currentLen
+      const step = diff > 80 ? 8 : diff > 30 ? 4 : diff > 10 ? 2 : 1
+      state.typewriterRenderedLen = Math.min(target.length, currentLen + step)
+      const visible = target.slice(0, state.typewriterRenderedLen)
+      body.innerHTML = formatMarkdown(visible) + '<span class="typing-cursor"></span>'
+      scrollChatBottom()
+    }, 18)
   }
 
   // UI: Permission request
@@ -297,11 +338,46 @@
       if (state.sessions.length > 0 && !state.activeSessionId) {
         selectSession(state.sessions[0].sessionId)
       } else if (state.sessions.length === 0) {
-        // Automatically start the first mission
-        await createNewSession()
+        // No existing sessions: show draft welcome screen without creating process
+        enterDraftMode()
       }
     } catch (e) {
       console.error('[cockpit] Failed to load sessions:', e)
+      enterDraftMode()
+    }
+  }
+
+  function enterDraftMode() {
+    state.activeSessionId = null
+    finishCurrentTurn()
+    renderSessionList()
+    renderWelcomeScreen()
+    const input = $('chat-input')
+    if (input) input.focus()
+  }
+
+  function renderWelcomeScreen() {
+    const chat = $('chat-messages')
+    if (!chat) return
+    chat.innerHTML = `
+      <div class="welcome-screen">
+        <div class="welcome-icon">⚡</div>
+        <h2>新建智能体任务</h2>
+        <p>在专属安全沙箱环境中运行。输入您的数据分析、自动化脚本、MCP 知识库或业务需求，智能体将在接收到任务时启动协作。</p>
+        <div class="welcome-examples">
+          <button class="example-btn" onclick="window.__fillPrompt('列出当前工作区的所有文件，并告诉我环境信息')">📂 检查当前工作区与环境</button>
+          <button class="example-btn" onclick="window.__fillPrompt('编写一个处理 CSV 数据的 Python 脚本，提取关键统计指标')">📊 编写并运行数据分析脚本</button>
+          <button class="example-btn" onclick="window.__fillPrompt('检查可用工具和 MCP 服务集成状态')">⚙️ 检索 MCP 工具与扩展</button>
+        </div>
+      </div>
+    `
+  }
+
+  window.__fillPrompt = (text) => {
+    const input = $('chat-input')
+    if (input) {
+      input.value = text
+      input.focus()
     }
   }
 
@@ -324,18 +400,21 @@
   }
 
   function finishCurrentTurn() {
-    document.querySelectorAll('.active-thought-card').forEach((e) => {
-      e.classList.remove('active-thought-card')
-      const badge = e.querySelector('.badge-blue')
-      if (badge) {
-        badge.className = 'badge badge-gray'
-        badge.textContent = '思考完成'
-      }
-    })
+    finalizeThoughts()
+    if (state.typewriterTimer) {
+      clearInterval(state.typewriterTimer)
+      state.typewriterTimer = null
+    }
+    const body = document.querySelector('.active-agent-body')
+    if (body && state.typewriterTargetText) {
+      body.innerHTML = formatMarkdown(state.typewriterTargetText)
+    }
     document.querySelectorAll('.active-tools-card').forEach(e => e.classList.remove('active-tools-card'))
     document.querySelectorAll('.active-agent-body').forEach(e => e.classList.remove('active-agent-body'))
     state.currentThoughtText = ''
     state.currentAgentText = ''
+    state.typewriterTargetText = ''
+    state.typewriterRenderedLen = 0
   }
 
   function setBusy(busy) {
@@ -392,21 +471,6 @@
     }
   }
 
-  async function createNewSession() {
-    try {
-      const res = await api('/api/session/new', {
-        method: 'POST',
-        body: JSON.stringify({}),
-      })
-      if (res.sessionId) {
-        state.sessions.unshift({ sessionId: res.sessionId, cwd: res.cwd })
-        await selectSession(res.sessionId)
-      }
-    } catch (e) {
-      alert('创建任务会话失败: ' + e.message)
-    }
-  }
-
   function appendUserMessage(text) {
     const wrapper = document.createElement('div')
     wrapper.className = 'message message-user'
@@ -419,12 +483,33 @@
     if (state.isBusy) return
     const input = $('chat-input')
     const text = input.value.trim()
-    if (!text || !state.activeSessionId) return
+    if (!text) return
 
     input.value = ''
+    setBusy(true)
+
+    // Lazy session creation: only initialize session and backend runtime when user sends first prompt
+    if (!state.activeSessionId) {
+      const welcome = document.querySelector('.welcome-screen')
+      if (welcome) welcome.remove()
+      try {
+        const res = await api('/api/session/new', {
+          method: 'POST',
+          body: JSON.stringify({}),
+        })
+        if (!res.sessionId) throw new Error('未能获取有效的任务 ID')
+        state.activeSessionId = res.sessionId
+        state.sessions.unshift({ sessionId: res.sessionId, cwd: res.cwd })
+        renderSessionList()
+      } catch (e) {
+        alert('启动任务失败: ' + e.message)
+        setBusy(false)
+        return
+      }
+    }
+
     appendUserMessage(text)
     finishCurrentTurn()
-    setBusy(true)
 
     try {
       await api(`/api/session/${encodeURIComponent(state.activeSessionId)}/prompt`, {
@@ -661,7 +746,7 @@
     $('login-btn').onclick = () => login($('token-input').value)
     $('token-input').onkeydown = (e) => { if (e.key === 'Enter') login($('token-input').value) }
     $('logout-btn').onclick = logout
-    $('new-task-btn').onclick = createNewSession
+    $('new-task-btn').onclick = enterDraftMode
     $('send-btn').onclick = sendPrompt
     $('chat-input').onkeydown = (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -707,7 +792,7 @@
       $('token-input').value = savedToken
       login(savedToken)
     }
-    window.__agentCockpit = { login, logout, state, init }
+    window.__agentCockpit = { login, logout, state, init, enterDraftMode }
   }
 
   if (document.readyState === 'loading') {

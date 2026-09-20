@@ -195,6 +195,16 @@ describe('enterprise agent cockpit portal (Option B)', () => {
 
     await vi.waitFor(() => {
       expect(doc.getElementById('workspace-layout')!.hidden).toBe(false)
+      expect(doc.querySelector('.welcome-screen')).not.toBeNull()
+    })
+
+    // User submits their initial task prompt: session is created lazily
+    const input = doc.getElementById('chat-input') as HTMLTextAreaElement
+    input.value = 'Start analysis'
+    const sendBtn = doc.getElementById('send-btn') as HTMLButtonElement
+    sendBtn.click()
+
+    await vi.waitFor(() => {
       expect(dom.window.__agentCockpit.state.activeSessionId).toBe('sess-portal-1')
     })
 
