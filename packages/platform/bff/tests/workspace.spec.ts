@@ -25,13 +25,13 @@ describe('tenant workspace file safety', () => {
   })
 
   it('provisions and resolves workspace root cleanly', () => {
-    const principal = tenantPrincipal('finance', 'alice', 'member')
+    const principal = tenantPrincipal('finance', 'alice', 'user')
     const wsDir = getTenantWorkspaceDir(tempRoot, principal)
     expect(wsDir).toBe(join(tempRoot, 'finance', 'alice', 'workspace'))
   })
 
   it('rejects illegal path segments in principal', () => {
-    expect(() => getTenantWorkspaceDir(tempRoot, { deptId: '..', userId: 'alice', role: 'member', tenantId: '../alice' }))
+    expect(() => getTenantWorkspaceDir(tempRoot, { deptId: '..', userId: 'alice', role: 'user', tenantId: '../alice' }))
       .toThrow(PathTraversalError)
   })
 

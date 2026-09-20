@@ -16,9 +16,7 @@ import { verifyModelToken } from './model-token.ts'
 export { bearerOf, devTokenAuthenticator, type Authenticator, type TenantPrincipal } from './auth.ts'
 import { TranscriptStore } from './transcript.ts'
 
-export { composeTenantRuntimeFactory, composeWebRuntimeFactory, type ComposeTenantRuntimeOptions, type ComposeWebRuntimeOptions } from './compose.ts'
-import { mayUseWebUi, mountPrefix, parseUserMount, proxyWebUpgrade, proxyWebRequest } from './web-proxy.ts'
-import { WebRuntimeManager, type WebManagerStats, type WebRuntimeFactory } from '@deepseek-ai/dsh-orchestrator'
+export { composeTenantRuntimeFactory, type ComposeTenantRuntimeOptions } from './compose.ts'
 import {
   getTenantWorkspaceDir,
   listWorkspaceFiles,
@@ -67,16 +65,6 @@ export interface PlatformServerOptions {
     readonly upstreamBaseUrl: string
     readonly upstreamApiKey: string
   }
-  /**
-   * User-side original UI: when set, `/u/<dept>/<user>/` mounts an on-demand
-   * sandboxed `dsh web` per user behind the platform session.
-   */
-  readonly webRuntimes?: {
-    readonly factory: WebRuntimeFactory
-    readonly portMin?: number
-    readonly portMax?: number
-    readonly idleTimeoutMs?: number
-  }
 }
 
 export interface PlatformServer {
@@ -84,8 +72,6 @@ export interface PlatformServer {
   readonly server: Server
   /** Live runtime for the tenant, or undefined (tests and diagnostics). */
   peekRuntime(tenantId: string): TenantRuntime | undefined
-  /** Live web runtimes overview (console health view). */
-  webStats(): WebManagerStats
   close(): Promise<void>
 }
 
@@ -192,14 +178,6 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
   if (options.maxConcurrent !== undefined) managerOptions.maxConcurrent = options.maxConcurrent
   if (options.idleTimeoutMs !== undefined) managerOptions.idleTimeoutMs = options.idleTimeoutMs
   const manager = new TenantRuntimeManager(managerOptions)
-  const webManager = options.webRuntimes === undefined
-    ? undefined
-    : new WebRuntimeManager({
-      createRuntime: options.webRuntimes.factory,
-      ...(options.webRuntimes.portMin === undefined ? {} : { portMin: options.webRuntimes.portMin }),
-      ...(options.webRuntimes.portMax === undefined ? {} : { portMax: options.webRuntimes.portMax }),
-      ...(options.webRuntimes.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.webRuntimes.idleTimeoutMs }),
-    })
 
   const json = (response: ServerResponse, status: number, body: unknown): void => {
     const payload = JSON.stringify(body)
@@ -246,11 +224,10 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
         return
       }
     }
-    if (principal.role === 'platform-admin' && method === 'GET' && segments.length === 3 && segments[1] === 'admin' && segments[2] === 'overview') {
+    if (principal.role === 'admin' && method === 'GET' && segments.length === 3 && segments[1] === 'admin' && segments[2] === 'overview') {
       json(response, 200, {
         departments: options.authenticator.listDepartments?.() ?? [],
         acp: manager.stats(),
-        web: webManager?.stats() ?? { live: 0, liveKeys: [] },
       })
       return
     }
@@ -611,13 +588,6 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
       await proxyModelCall(request, response, url, options.modelGateway)
       return
     }
-    // User-side original UI mount: browsers hold a platform session cookie
-    // (minted from a ptoken query), not bearer headers.
-    const mount = parseUserMount(url.pathname)
-    if (mount !== undefined) {
-      await handleUserMount(request, response, url, mount)
-      return
-    }
     if (request.method === 'GET' && url.pathname !== '/api/') {
       const portalFile = getPortalFile(url.pathname)
       if (portalFile !== undefined) {
@@ -644,106 +614,12 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
     await dispatch(request, response, principal, url.pathname)
   }
 
-  /**
-   * Resolve the platform session for browser-facing /u/ requests. A console
-   * link's ptoken expresses the user's fresh sign-in intent, so when it is
-   * present AND authenticates it wins over any session cookie the browser
-   * still holds — otherwise switching accounts in one browser (an old,
-   * still-valid cookie from another user) would wedge every mount into a
-   * mismatched 403.
-   */
-  function sessionOf(request: IncomingMessage, url: URL): { principal: TenantPrincipal | undefined; cookieAuthenticated: boolean } {
-    const ptoken = url.searchParams.get('ptoken')
-    const ptokenPrincipal = ptoken === null ? undefined : options.authenticator.authenticateToken(ptoken)
-    const cookieToken = readSessionCookie(request)
-    const cookiePrincipal = cookieToken === undefined ? undefined : options.authenticator.authenticateToken(cookieToken)
-    if (ptokenPrincipal !== undefined) {
-      return {
-        principal: ptokenPrincipal,
-        cookieAuthenticated: ptokenPrincipal.tenantId === cookiePrincipal?.tenantId,
-      }
-    }
-    return { principal: cookiePrincipal, cookieAuthenticated: cookiePrincipal !== undefined }
-  }
-
-  async function handleUserMount(
-    request: IncomingMessage,
-    response: ServerResponse,
-    url: URL,
-    mount: { deptId: string; userId: string; rest: string },
-  ): Promise<void> {
-    if (webManager === undefined) {
-      json(response, 404, { error: 'web ui not enabled' })
-      return
-    }
-    // Routing fix-up first: the SPA's relative URLs only resolve when the
-    // mount itself carries its trailing slash.
-    if (mount.rest === '' && !url.pathname.endsWith('/')) {
-      response.writeHead(308, { location: mountPrefix(mount.deptId, mount.userId) })
-      response.end()
-      return
-    }
-    const { principal, cookieAuthenticated } = sessionOf(request, url)
-    if (principal === undefined) {
-      const ptoken = url.searchParams.get('ptoken')
-      if (ptoken !== null) {
-        transcript.audit('unknown', 'web-auth-failed', `${mount.deptId}/${mount.userId}`)
-        json(response, 401, { error: 'unauthorized' })
-        return
-      }
-      // No session at all: the browser needs the sign-in entry point.
-      response.writeHead(401, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
-      response.end('unauthorized: open your web UI through the console link (?ptoken=<your token> once)')
-      return
-    }
-    // A console link carries the ptoken: mint or rotate the session cookie
-    // whenever the browser's current one is absent OR no longer
-    // authenticates (a revoked token must not wedge the user out of the
-    // re-mint path), then land clean on the subpath root.
-    if (!cookieAuthenticated && url.searchParams.has('ptoken')) {
-      response.writeHead(303, {
-        location: mountPrefix(mount.deptId, mount.userId),
-        'set-cookie': sessionCookieHeader(ptokenValue(url)),
-        'cache-control': 'no-store',
-      })
-      response.end()
-      return
-    }
-    if (!mayUseWebUi(principal, mount.deptId, mount.userId)) {
-      transcript.audit(principal.tenantId, 'web-forbidden', `${mount.deptId}/${mount.userId}`)
-      json(response, 403, { error: 'forbidden' })
-      return
-    }
-    await proxyWebRequest(webManager, request, response, mount, url)
-  }
-
   const wss = new WebSocketServer({ noServer: true })
   server.on('upgrade', (request, socket, head) => {
     // Synchronous event callback: an unguarded throw (a hostile Host header
     // fails URL parsing before any auth) would crash the whole process.
     try {
       const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
-      // Original-UI WebSocket tunnels (the SPA's remote.mux socket).
-      const mount = parseUserMount(url.pathname)
-      if (mount !== undefined) {
-        if (webManager === undefined) {
-          socket.destroy()
-          return
-        }
-        const principal = sessionOf(request, url).principal
-        if (principal === undefined) {
-          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
-          socket.destroy()
-          return
-        }
-        if (!mayUseWebUi(principal, mount.deptId, mount.userId)) {
-          socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
-          socket.destroy()
-          return
-        }
-        proxyWebUpgrade(webManager, request, socket, head, mount)
-        return
-      }
       if (url.pathname !== '/ws') {
         socket.destroy()
         return
@@ -801,7 +677,6 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
     port: address.port,
     server,
     peekRuntime: tenantId => manager.peek(tenantId),
-    webStats: () => webManager?.stats() ?? { live: 0, liveKeys: [] },
     close: async () => {
       for (const client of wss.clients) client.terminate()
       await new Promise<void>((resolve, reject) => {
@@ -809,7 +684,6 @@ export async function startPlatformServer(options: PlatformServerOptions): Promi
         server.once('error', reject)
       })
       await manager.shutdown()
-      await webManager?.shutdown()
       transcript.close()
     },
   }
@@ -852,42 +726,17 @@ function extractUsage(contentType: string, collected: string): { prompt: number;
 class SessionGoneError extends Error {}
 
 /**
- * The department a console request may read: a dept admin's own department,
- * a platform admin's ?dept= selection (still a safe segment — the transcript's
- * GLOB prefix queries document that invariant), or undefined when the caller
- * may not read departments at all (members) or named an invalid one.
+ * The department a console request may read: an admin's own department
+ * (or their ?dept= selection — still a safe segment, the transcript's GLOB
+ * prefix queries document that invariant), or undefined when a regular
+ * user or an invalid department was named.
  */
 function deptScopeOf(request: IncomingMessage, principal: TenantPrincipal): string | undefined {
-  if (principal.role === 'platform-admin') {
-    const dept = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`).searchParams.get('dept')
-    if (dept === null || dept === '' || !isSafeTenantSegment(dept)) return undefined
-    return dept
-  }
-  if (principal.role === 'dept-admin') return principal.deptId
-  return undefined
-}
-
-const PLATFORM_SESSION_COOKIE = 'dsh-platform-session'
-
-/** Read the platform session cookie's token, or undefined. */
-function readSessionCookie(request: IncomingMessage): string | undefined {
-  const header = request.headers.cookie
-  if (header === undefined) return undefined
-  for (const part of header.split(';')) {
-    const [name, ...rest] = part.trim().split('=')
-    if (name === PLATFORM_SESSION_COOKIE && rest.length > 0) return rest.join('=')
-  }
-  return undefined
-}
-
-function ptokenValue(url: URL): string | undefined {
-  return url.searchParams.get('ptoken') ?? undefined
-}
-
-/** HttpOnly, scoped to the /u/ mounts; SameSite=Lax survives the console link navigation. */
-function sessionCookieHeader(token: string | undefined): string {
-  if (token === undefined) return ''
-  return `${PLATFORM_SESSION_COOKIE}=${token}; Path=/u/; HttpOnly; SameSite=Lax; Max-Age=${String(30 * 24 * 60 * 60)}`
+  if (principal.role !== 'admin') return undefined
+  const dept = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`).searchParams.get('dept')
+  if (dept === null || dept === '') return principal.deptId
+  if (!isSafeTenantSegment(dept)) return undefined
+  return dept
 }
 
 const MAX_JSON_BODY_BYTES = 10 * 1024 * 1024

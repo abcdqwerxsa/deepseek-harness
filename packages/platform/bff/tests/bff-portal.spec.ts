@@ -25,7 +25,7 @@ beforeAll(async () => {
   }
   server = await startPlatformServer({
     authenticator: devTokenAuthenticator(new Map([
-      ['portal-member', { deptId: 'deptA', userId: 'user1', role: 'member' }],
+      ['portal-member', { deptId: 'deptA', userId: 'user1', role: 'user' }],
     ])),
     createRuntime: async tenantId => ({
       tenantId,

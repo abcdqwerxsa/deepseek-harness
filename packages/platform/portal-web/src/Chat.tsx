@@ -256,7 +256,7 @@ export function Chat({ token, principal, onLogout }: {
           </div>
           <button className="logout" onClick={onLogout}>退出</button>
         </div>
-        {principal.role !== 'member' && (
+        {principal.role !== 'user' && (
           <button className="admin-entry" onClick={() => setAdminOpen(true)}>⚙ 管理控制台</button>
         )}
       </aside>

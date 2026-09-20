@@ -2,9 +2,7 @@ import { useEffect, useState } from 'react'
 import { apiClient, type AuditEvent, type DeptMember, type DeptUsage, type Principal } from './api'
 
 /**
- * Admin drawer over the BFF console endpoints. Gated on any admin role
- * today; the role-flattening milestone collapses the two variants into one
- * user/admin view.
+ * Admin drawer over the BFF console endpoints (user/admin roles).
  */
 export function AdminPanel({ principal, onClose }: { principal: Principal; onClose: () => void }) {
   const [members, setMembers] = useState<readonly DeptMember[]>([])
@@ -13,7 +11,7 @@ export function AdminPanel({ principal, onClose }: { principal: Principal; onClo
   const [overview, setOverview] = useState<{ departments: readonly { deptId: string; users: number }[]; acp: { live: number } } | null>(null)
   const [error, setError] = useState('')
 
-  const isPlatformAdmin = principal.role === 'platform-admin'
+  const isAdmin = principal.role === 'admin'
 
   useEffect(() => {
     let cancelled = false
@@ -21,9 +19,9 @@ export function AdminPanel({ principal, onClose }: { principal: Principal; onClo
     void apiClient.deptMembers(principal.deptId).then(r => { if (!cancelled) setMembers(r.members) }, fail)
     void apiClient.deptUsage(principal.deptId).then(r => { if (!cancelled) setUsage(r) }, fail)
     void apiClient.deptAudit(principal.deptId).then(r => { if (!cancelled) setAudit(r) }, fail)
-    if (isPlatformAdmin) void apiClient.adminOverview().then(r => { if (!cancelled) setOverview(r) }, fail)
+    if (isAdmin) void apiClient.adminOverview().then(r => { if (!cancelled) setOverview(r) }, fail)
     return () => { cancelled = true }
-  }, [principal.deptId, isPlatformAdmin])
+  }, [principal.deptId, isAdmin])
 
   return (
     <div className="admin-overlay" onClick={onClose}>
@@ -34,7 +32,7 @@ export function AdminPanel({ principal, onClose }: { principal: Principal; onClo
         </div>
         {error !== '' && <div className="admin-error">{error}</div>}
 
-        {isPlatformAdmin && overview !== null && (
+        {isAdmin && overview !== null && (
           <section>
             <h3>实例概览</h3>
             <p className="admin-kpi">

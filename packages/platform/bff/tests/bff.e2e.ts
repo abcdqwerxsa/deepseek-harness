@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { devTokenAuthenticator, type DevTokenIdentity } from '../src/auth.ts'
 
-const ident = (userId: string, deptId = 'core'): DevTokenIdentity => ({ deptId, userId, role: 'member' })
+const ident = (userId: string, deptId = 'core'): DevTokenIdentity => ({ deptId, userId, role: 'user' })
 import { messageText, startPlatformServer, type PlatformServer } from '../src/index.ts'
 
 /**

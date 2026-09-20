@@ -8,8 +8,8 @@ import type { IncomingMessage } from 'node:http'
  * @module
  */
 
-/** Department-scoped role. Platform admins reserve the `_platform` dept. */
-export type TenantRole = 'member' | 'dept-admin' | 'platform-admin'
+/** Role: a regular user, or an admin who may read console views. */
+export type TenantRole = 'user' | 'admin'
 
 export interface TenantPrincipal {
   /** Department the user belongs to. */

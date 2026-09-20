@@ -335,12 +335,3 @@ export class AcpEventHub extends EventEmitter {
 }
 
 export { spawnAcpStdioRuntime, type StdioRuntimeSpec } from './stdio.ts'
-export {
-  spawnWebRuntime,
-  WebRuntimeManager,
-  type WebManagerStats,
-  type WebRuntime,
-  type WebRuntimeFactory,
-  type WebRuntimeManagerOptions,
-  type WebRuntimeSpec,
-} from './web-runtime.ts'

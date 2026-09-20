@@ -41,7 +41,7 @@ export function createWebConnectionRpc(doFetch?: RpcFetch, openStream?: RpcStrea
         payload,
       }
       const response = await send(
-        new URL(relativeTarget(channel, endpoint), resolveBase()),
+        new URL(`${channel}/${endpoint}`, resolveBase()),
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -106,18 +106,8 @@ function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
 }
 
 function resolveBase(): string {
-  // Prefer the document base: served pages carry `<base href>`, so a page
-  // mounted under a subpath (the platform's `/u/<dept>/<user>/` proxy)
-  // resolves `api/...` against that prefix, while the standalone root mount
-  // keeps resolving to `/api/...` exactly as before.
-  const globals = globalThis as { document?: { baseURI?: string }; location?: { origin?: string } }
-  if (globals.document?.baseURI !== undefined) return globals.document.baseURI
-  return globals.location?.origin !== undefined && globals.location.origin !== 'null' ? globals.location.origin : INTERNAL_BASE
-}
-
-/** Channel-qualified endpoint as a base-relative path (`api/endpoint`). */
-function relativeTarget(channel: string, endpoint: string): string {
-  return `${channel}/${endpoint}`.replace(/^\//u, '')
+  const location = (globalThis as { location?: { origin?: string } }).location
+  return location?.origin !== undefined && location.origin !== 'null' ? location.origin : INTERNAL_BASE
 }
 
 function assertTarget(channel: string, endpoint: string): void {

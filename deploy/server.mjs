@@ -5,7 +5,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { dirname, join } from 'node:path'
-import { composeTenantRuntimeFactory, composeWebRuntimeFactory } from '../packages/platform/bff/lib/index.js'
+import { composeTenantRuntimeFactory } from '../packages/platform/bff/lib/index.js'
 import { devTokenAuthenticator } from '../packages/platform/bff/lib/index.js'
 import { startPlatformServer } from '../packages/platform/bff/lib/index.js'
 
@@ -32,7 +32,7 @@ if (!Array.isArray(tokens) || tokens.length === 0) {
   console.error('platform: PLATFORM_TOKENS must be a JSON array of [token, deptId, userId, role] tuples')
   process.exit(2)
 }
-const ROLES = new Set(['member', 'dept-admin', 'platform-admin'])
+const ROLES = new Set(['user', 'admin'])
 // A deptId/userId becomes directory-name components under the tenants root
 // and read-write bind targets inside its sandbox: each must stay a single
 // safe path segment (a leading underscore is reserved for the platform).
@@ -48,7 +48,7 @@ for (const [token, deptId, userId, role] of tokens) {
     process.exit(2)
   }
   if (role !== undefined && !ROLES.has(role)) {
-    console.error(`platform: unknown role ${JSON.stringify(String(role))} (member | dept-admin | platform-admin)`)
+    console.error(`platform: unknown role ${JSON.stringify(String(role))} (user | admin)`)
     process.exit(2)
   }
 }
@@ -68,13 +68,13 @@ if (adminTokens.length === 0) {
 // Platform admins get a synthesized identity in the reserved `_platform`
 // department; they hold no sandbox of their own.
 const identities = new Map(tokens.map(([token, deptId, userId, role]) =>
-  [token, { deptId, userId, role: role ?? 'member' }]))
+  [token, { deptId, userId, role: role ?? 'user' }]))
 for (const [index, token] of adminTokens.entries()) {
   if (identities.has(token)) {
     console.error('platform: a token cannot be both a member token and a PLATFORM_ADMIN_TOKENS entry')
     process.exit(2)
   }
-  identities.set(token, { deptId: '_platform', userId: `admin-${String(index + 1)}`, role: 'platform-admin' })
+  identities.set(token, { deptId: '_platform', userId: `admin-${String(index + 1)}`, role: 'admin' })
 }
 
 const isolationRaw = process.env.PLATFORM_ISOLATION
@@ -89,16 +89,6 @@ if (isolationRaw !== undefined && isolationRaw !== '') {
     console.error('platform: PLATFORM_ISOLATION must be a JSON array of strings (e.g. ["bwrap", "--ro-bind", ...])')
     process.exit(2)
   }
-}
-
-// User-side original UI: sandboxed `dsh web` per user behind /u/<dept>/<user>/.
-// Requires the public authority browsers use (the child's /api fence and
-// cookie signatures bind to the preserved Host header).
-const webUiEnabled = process.env.PLATFORM_WEB === '1'
-const publicAuthority = process.env.PLATFORM_PUBLIC_AUTHORITY ?? ''
-if (webUiEnabled && publicAuthority === '') {
-  console.error('platform: PLATFORM_WEB=1 requires PLATFORM_PUBLIC_AUTHORITY (the host[:port] browsers use, e.g. deploy.internal:8443)')
-  process.exit(2)
 }
 
 if (process.env.PLATFORM_MODEL_GATEWAY === '1' && (process.env.DEEPSEEK_API_KEY ?? '') === '') {
@@ -130,25 +120,6 @@ const platform = await startPlatformServer({
   dbPath,
   host: process.env.PLATFORM_HOST ?? '0.0.0.0',
   port: Number(process.env.PLATFORM_PORT ?? 8080),
-  ...(webUiEnabled ? {
-    webRuntimes: {
-      factory: composeWebRuntimeFactory({
-        tenantsRoot,
-        dshBin: process.env.PLATFORM_DSH_BIN ?? '/app/apps/cli/lib/bin.js',
-        apiKey: process.env.DEEPSEEK_API_KEY ?? '',
-        dshVersion: process.env.PLATFORM_DSH_VERSION ?? 'unpinned',
-        ...(modelGatewayConfig === undefined && process.env.DEEPSEEK_BASE_URL !== undefined ? { baseUrl: process.env.DEEPSEEK_BASE_URL } : {}),
-        ...(process.env.PLATFORM_SETTINGS_YAML === undefined || process.env.PLATFORM_SETTINGS_YAML === '' ? {} : { settingsYaml: process.env.PLATFORM_SETTINGS_YAML }),
-        ...(modelGatewayConfig !== undefined ? { modelGateway: modelGatewayConfig } : {}),
-        ...(process.env.PLATFORM_FORCE_REPROVISION === 'true' ? { forceReprovision: true } : {}),
-        ...(isolation === undefined ? {} : { isolationCommand: isolation }),
-        trustedAuthority: publicAuthority,
-      }),
-      ...(process.env.PLATFORM_WEB_PORT_MIN === undefined ? {} : { portMin: Number(process.env.PLATFORM_WEB_PORT_MIN) }),
-      ...(process.env.PLATFORM_WEB_PORT_MAX === undefined ? {} : { portMax: Number(process.env.PLATFORM_WEB_PORT_MAX) }),
-      ...(process.env.PLATFORM_WEB_IDLE_MS === undefined ? {} : { idleTimeoutMs: Number(process.env.PLATFORM_WEB_IDLE_MS) }),
-    },
-  } : {}),
   ...(modelGatewayConfig !== undefined ? {
     modelGateway: {
       secret: modelGatewaySecret,

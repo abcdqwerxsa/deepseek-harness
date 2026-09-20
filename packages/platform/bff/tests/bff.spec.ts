@@ -8,7 +8,7 @@ import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import WebSocket from 'ws'
 import { devTokenAuthenticator, type DevTokenIdentity } from '../src/auth.ts'
 
-const ident = (userId: string, deptId = 'core'): DevTokenIdentity => ({ deptId, userId, role: 'member' })
+const ident = (userId: string, deptId = 'core'): DevTokenIdentity => ({ deptId, userId, role: 'user' })
 import { startPlatformServer } from '../src/index.ts'
 import { messageText, type PlatformServer } from '../src/index.ts'
 import type { TenantRuntime } from '@deepseek-ai/dsh-orchestrator'

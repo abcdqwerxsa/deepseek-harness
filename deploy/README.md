@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Two containers on an internal network: `platform` (the BFF, orchestrator, admin console, and the built dsh tree in one image — by design, see the architecture notes in `packages/platform/`) and `gateway` (Caddy with an internal-CA TLS certificate). The organization is departments of users (`PLATFORM_TOKENS` maps tokens to `[deptId, userId, role]`); each user's home, workspace, SQLite transcript rows, and audit entries persist under the `platform-data` volume at `/data/tenants/<deptId>/<userId>`. Each user-side runtime (the ACP child and, with `PLATFORM_WEB=1`, their on-demand original `dsh web` UI at `/u/<deptId>/<userId>/`) can run behind a bwrap isolation wrapper (`PLATFORM_ISOLATION`) for a private user/PID namespace with read-only system trees.
+Two containers on an internal network: `platform` (the BFF, orchestrator, admin console, and the built dsh tree in one image — by design, see the architecture notes in `packages/platform/`) and `gateway` (Caddy with an internal-CA TLS certificate). The organization is departments of users (`PLATFORM_TOKENS` maps tokens to `[deptId, userId, role]`); each user's home, workspace, SQLite transcript rows, and audit entries persist under the `platform-data` volume at `/data/tenants/<deptId>/<userId>`. Each user-side ACP runtime can run behind a bwrap isolation wrapper (`PLATFORM_ISOLATION`) for a private user/PID namespace with read-only system trees.
 
 ## Use this deployment
 
@@ -29,10 +29,6 @@ and the initial platform admin token (at `/data/platform-admin-token`, also
 printed once in the container logs — sign in to the console with it, then
 declare real tokens in `.env`).
 
-Users open their original UI through the console's “open my workspace” link
-(requires `PLATFORM_WEB=1` and `PLATFORM_PUBLIC_AUTHORITY`, the host[:port]
-browsers use); members without web UI keep the API-only path.
-
 Upgrading the platform by bumping `PLATFORM_DSH_VERSION` re-locks tenant
 manifests: re-provisioning rejects version drift by default. Either keep the
 stamp stable across compatible upgrades, or set `PLATFORM_FORCE_REPROVISION=true`
@@ -48,7 +44,7 @@ SECURITY-NOTES gap 1).
 ## Understand the pieces
 
 - `Dockerfile` — multi-stage: the builder compiles the workspace (official Node image carries the dev headers; `gcc` covers the native addon), then a slim runtime carries the built tree plus production dependencies and `bwrap`.
-- `server.mjs` — the container entrypoint: environment-driven `startPlatformServer` + `composeTenantRuntimeFactory`/`composeWebRuntimeFactory` and first-boot secret generation.
+- `server.mjs` — the container entrypoint: environment-driven `startPlatformServer` + `composeTenantRuntimeFactory` and first-boot secret generation.
 - `docker-compose.yml` — services, the data volume, and the internal network; the gateway owns TLS and the body limit (rate limiting needs a Caddy plugin build).
 - `Caddyfile` — TLS termination, reverse proxy (WebSocket upgrades pass through), and the 8 MB request-body cap.
 - The child environment is a fixed minimal set (`PATH`, `HOME`, `DSH_HOME`, telemetry-off, the model key) — BFF secrets never reach tenant children; the wrapper e2e locks this.

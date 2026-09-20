@@ -9,7 +9,7 @@ kind: "package-deploy"
 
 ## 摘要
 
-内网两个容器：`platform`（BFF、编排器、管理控制台与构建好的 dsh 树同镜像——这是刻意设计，见 `packages/platform/` 的架构记录）与 `gateway`（内置 CA 证书的 Caddy TLS 网关）。组织模型为部门下的用户（`PLATFORM_TOKENS` 把令牌映射到 `[deptId, userId, role]`）；每个用户的 home、workspace、SQLite transcript 行与审计记录持久化在 `platform-data` 卷的 `/data/tenants/<deptId>/<userId>` 下。每个用户侧运行时（ACP 子进程，以及 `PLATFORM_WEB=1` 时按需启动、挂载在 `/u/<deptId>/<userId>/` 的原版 `dsh web` UI）可经 bwrap 隔离包装（`PLATFORM_ISOLATION`）运行在私有 user/PID 命名空间、只读系统树下。
+内网两个容器：`platform`（BFF、编排器、管理控制台与构建好的 dsh 树同镜像——这是刻意设计，见 `packages/platform/` 的架构记录）与 `gateway`（内置 CA 证书的 Caddy TLS 网关）。组织模型为部门下的用户（`PLATFORM_TOKENS` 把令牌映射到 `[deptId, userId, role]`）；每个用户的 home、workspace、SQLite transcript 行与审计记录持久化在 `platform-data` 卷的 `/data/tenants/<deptId>/<userId>` 下。每个用户侧 ACP 运行时可经 bwrap 隔离包装（`PLATFORM_ISOLATION`）运行在私有 user/PID 命名空间、只读系统树下。
 
 ## 使用本部署
 
@@ -28,10 +28,6 @@ docker compose up -d --build
 初始平台管理员令牌（存于 `/data/platform-admin-token`，同时在容器日志
 打印一次——用它登录控制台，再在 `.env` 中声明正式令牌）。
 
-用户经控制台的“打开我的工作台”链接进入原版 UI（需要 `PLATFORM_WEB=1`
-与 `PLATFORM_PUBLIC_AUTHORITY`，即浏览器访问的 host[:port]）；未开启
-web UI 的成员仍可走 API 通道。
-
 升级平台时上调 `PLATFORM_DSH_VERSION` 会重新锁定租户清单：默认情况下重新
 置备会拒绝版本漂移。要么在兼容升级间保持标记不变，要么在升级部署时设置
 `PLATFORM_FORCE_REPROVISION=true`（否则只能删除 `<deptId>/<userId>` 数据目录恢复）。
@@ -44,7 +40,7 @@ web UI 的成员仍可走 API 通道。
 ## 理解各部件
 
 - `Dockerfile` — 多阶段：builder 编译整个工作区（官方 Node 镜像自带开发头文件；`gcc` 覆盖原生插件），slim 运行时携带构建产物、生产依赖与 `bwrap`。
-- `server.mjs` — 容器入口：环境变量驱动的 `startPlatformServer` + `composeTenantRuntimeFactory`/`composeWebRuntimeFactory` 与首启密钥生成。
+- `server.mjs` — 容器入口：环境变量驱动的 `startPlatformServer` + `composeTenantRuntimeFactory` 与首启密钥生成。
 - `docker-compose.yml` — 服务、数据卷与内网；网关负责 TLS 与 body 上限（限流需要 Caddy 插件构建）。
 - `Caddyfile` — TLS 终结、反向代理（WebSocket 升级透明透传）与 8MB 请求体上限。
 - 子进程环境是固定的最小集合（`PATH`、`HOME`、`DSH_HOME`、遥测关闭、模型 key）——BFF 自身的秘密绝不进入租户子进程；wrapper e2e 锁定了这一点。

@@ -2,10 +2,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   spawnAcpStdioRuntime,
-  spawnWebRuntime,
   type TenantRuntimeFactory,
-  type WebRuntime,
-  type WebRuntimeFactory,
 } from '@deepseek-ai/dsh-orchestrator'
 import { signModelToken } from './model-token.ts'
 import { provisionTenantHome } from '@deepseek-ai/dsh-tenant-profile'
@@ -79,53 +76,16 @@ export function composeTenantRuntimeFactory(options: ComposeTenantRuntimeOptions
   }
 }
 
-export interface ComposeWebRuntimeOptions extends ComposeTenantRuntimeOptions {
-  /**
-   * Public authority (host[:port]) the browsers use to reach the platform
-   * gateway. Passed to `dsh web --trusted-host` so the child's /api fence
-   * accepts the preserved Host header of proxied requests.
-   */
-  readonly trustedAuthority: string
-}
-
-/**
- * Deployment glue for the user-side original UI: one `dsh web` child per
- * user, provisioned into the same home/workspace the ACP runtime uses
- * (profile `web` beside `acp`), same minimal environment and model-gateway
- * token injection, and the same optional isolation wrapper.
- */
-export function composeWebRuntimeFactory(options: ComposeWebRuntimeOptions): WebRuntimeFactory {
-  return async (tenantId, port): Promise<WebRuntime> => {
-    const sandbox = prepareTenantSandbox(options, tenantId, 'web')
-    return spawnWebRuntime(tenantId, port, {
-      command: sandbox.command,
-      args: [
-        ...sandbox.args,
-        options.dshBin,
-        'web',
-        '--port',
-        String(port),
-        '--no-open',
-        '--trusted-host',
-        options.trustedAuthority,
-      ],
-      cwd: sandbox.cwd,
-      env: sandbox.env,
-    })
-  }
-}
-
 /**
  * Provision one user's sandbox and derive the child spawn skeleton: home
  * plus workspace under the tenants root, optional settings.yaml, the
  * isolation wrapper with `{tenantDir}` resolved, and the minimal child
  * environment (model-gateway token instead of the provider key when
- * enabled). Shared by the ACP and web factories.
+ * enabled).
  */
 function prepareTenantSandbox(
   options: ComposeTenantRuntimeOptions,
   tenantId: string,
-  profileName: 'acp' | 'web' = 'acp',
 ): { command: string; args: string[]; cwd: string; env: Record<string, string> } {
   // The composite key becomes two real directory levels; validating the
   // pair here keeps a hostile token map from provisioning outside the root.

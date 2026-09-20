@@ -302,14 +302,9 @@ class StreamInbox {
 }
 
 function remoteStreamUrl(): string {
-  // Same base-relative resolution as the unary RPC caller: served pages carry
-  // `<base href>`, so a subpath mount (`/u/<dept>/<user>/`) keeps the mux
-  // socket under its prefix while the standalone root mount stays at
-  // `/api/remote.mux`.
-  const globals = globalThis as { document?: { baseURI?: string }; location?: { origin?: string } }
-  const base = globals.document?.baseURI
-    ?? (globals.location?.origin !== undefined && globals.location.origin !== 'null' ? globals.location.origin : INTERNAL_BASE)
-  const url = new URL(REMOTE_STREAM_MUX_PATH.replace(/^\//u, ''), base)
+  const location = (globalThis as { location?: { origin?: string } }).location
+  const base = location?.origin !== undefined && location.origin !== 'null' ? location.origin : INTERNAL_BASE
+  const url = new URL(REMOTE_STREAM_MUX_PATH, base)
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
   return url.href
 }

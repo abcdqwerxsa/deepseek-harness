@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http'
 import { afterEach, describe, expect, it } from 'vitest'
 import { devTokenAuthenticator, type DevTokenIdentity } from '../src/auth.ts'
 
-const ident = (userId: string, deptId = 'core'): DevTokenIdentity => ({ deptId, userId, role: 'member' })
+const ident = (userId: string, deptId = 'core'): DevTokenIdentity => ({ deptId, userId, role: 'user' })
 import { startPlatformServer, type PlatformServer } from '../src/index.ts'
 import { signModelToken } from '../src/model-token.ts'
 

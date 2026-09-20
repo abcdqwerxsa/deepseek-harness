@@ -69,7 +69,7 @@
 - [x] M2：portal-web 脚手架 + 登录/会话列表/聊天流（流式、思考折叠、工具卡片）——`packages/platform/portal-web/`（React 18 + vite 6 + TS strict；纯 reducer `src/events.ts` 修 6 项 P0；定长三文件产物 BFF 零改动；reducer spec 9 用例 + BFF 静态契约 spec 替换旧 776 行 JSDOM 套件）
 - [x] M3a：审批卡 + 工作区文件面板 + 模型切换器（含 BFF `/api/session/:id/config` 转发端点，即原 M3c 一并完成）
 - [x] M3b：管理台视图（用户/部门/用量/审计）迁移（对现有三级 API，非 member 即可见；M4 拍平时同步收敛）
-- [ ] M4：角色拍平 + 双 UI 线删除 + base-path 回退
+- [x] M4：角色拍平（user/admin）+ 双 UI 线删除（web-proxy/web-runtime/spec 删除、server.mjs/compose/README/env 清理）+ base-path 回退（rpc.ts、stream-client.ts；api-path.ts 实无 diff）——平台包 8 文件 72 用例全绿
 - [ ] M5：部署链接入 + 测试迁移 + 端到端验收
 
 ## Verification
