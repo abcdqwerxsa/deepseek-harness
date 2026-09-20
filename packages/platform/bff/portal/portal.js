@@ -16,6 +16,7 @@
     files: [],
     currentThoughtText: '',
     currentAgentText: '',
+    lastUserPrompt: '',
     typewriterTimer: null,
     typewriterTargetText: '',
     typewriterRenderedLen: 0,
@@ -50,20 +51,30 @@
       .replaceAll("'", '&#039;')
   }
 
-  // Simple Markdown renderer
+  // Simple Markdown renderer with codeblock tokenization
   function formatMarkdown(text) {
     if (!text) return ''
     let html = escapeHtml(text)
-    // Code blocks ```code```
+    const codeBlocks = []
     html = html.replace(/```([a-z0-9_-]*)\n([\s\S]*?)```/g, (_, lang, code) => {
-      return `<pre><code class="language-${lang}">${code}</code></pre>`
+      const index = codeBlocks.length
+      codeBlocks.push(`<pre><code class="language-${lang}">${code}</code></pre>`)
+      return `@@CODE_BLOCK_${index}@@`
     })
-    // Inline code `code`
-    html = html.replace(/`([^`]+)`/g, '<code>$1</code>')
-    // Bold **text**
+    const inlineCodes = []
+    html = html.replace(/`([^`]+)`/g, (_, code) => {
+      const index = inlineCodes.length
+      inlineCodes.push(`<code>${code}</code>`)
+      return `@@INLINE_CODE_${index}@@`
+    })
     html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    // Line breaks
     html = html.replace(/\n/g, '<br>')
+    inlineCodes.forEach((codeHtml, i) => {
+      html = html.replace(`@@INLINE_CODE_${i}@@`, codeHtml)
+    })
+    codeBlocks.forEach((blockHtml, i) => {
+      html = html.replace(`@@CODE_BLOCK_${i}@@`, blockHtml)
+    })
     return html
   }
 
@@ -125,16 +136,16 @@
 
       if (kind === 'user_message_chunk') {
         const text = update.content?.text || ''
-        const lastMsg = $('chat-messages').lastElementChild
-        const alreadyRendered = lastMsg && lastMsg.classList.contains('message-user') && lastMsg.textContent === text
-        if (!alreadyRendered) {
+        if (text && text !== state.lastUserPrompt) {
           finishCurrentTurn()
           appendUserMessage(text)
         }
       } else if (kind === 'agent_thought_chunk') {
         const text = update.content?.text || ''
-        state.currentThoughtText += text
-        renderThoughtChunk(state.currentThoughtText)
+        if (text) {
+          state.currentThoughtText += text
+          renderThoughtChunk(state.currentThoughtText)
+        }
       } else if (kind === 'tool_call') {
         renderToolCall(update)
       } else if (kind === 'tool_call_update') {
@@ -142,7 +153,7 @@
       } else if (kind === 'agent_message_chunk') {
         const text = update.content?.text || ''
         state.currentAgentText += text
-        renderAgentChunk(state.currentAgentText)
+        renderAgentChunk(state.currentAgentText, false)
       }
     } else if (msg.type === 'permission-request') {
       renderPermissionRequest(msg.id, msg.request)
@@ -151,6 +162,7 @@
 
   // UI: Thought Flow (Cherry Studio Style)
   function renderThoughtChunk(fullText) {
+    if (!fullText || !fullText.trim()) return
     let container = document.querySelector('.active-thought-container')
     if (!container) {
       container = document.createElement('div')
@@ -186,21 +198,39 @@
   }
 
   function finalizeThoughts() {
-    document.querySelectorAll('.active-thought-container').forEach((container) => {
-      container.classList.remove('active-thought-container')
+    document.querySelectorAll('.active-thought-container, .active-thought-card').forEach((container) => {
+      container.classList.remove('active-thought-container', 'active-thought-card')
       const pulse = container.querySelector('.thought-pulse')
       if (pulse) pulse.remove()
       const title = container.querySelector('.thought-title')
       const content = container.querySelector('.thought-content')
       const charCount = content?.textContent?.length || 0
       if (title) {
-        title.textContent = `已深度思考 (${charCount} 字)`
+        title.textContent = charCount > 0 ? `已深度思考 (${charCount} 字)` : '已深度思考'
       }
     })
+    state.currentThoughtText = ''
+  }
+
+  function finishCurrentAgentBody() {
+    if (state.typewriterTimer) {
+      clearInterval(state.typewriterTimer)
+      state.typewriterTimer = null
+    }
+    const body = document.querySelector('.active-agent-body')
+    if (body && state.typewriterTargetText) {
+      body.innerHTML = formatMarkdown(state.typewriterTargetText)
+    }
+    document.querySelectorAll('.active-agent-body').forEach(e => e.classList.remove('active-agent-body'))
+    state.currentAgentText = ''
+    state.typewriterTargetText = ''
+    state.typewriterRenderedLen = 0
   }
 
   // UI: Tool Call
   function renderToolCall(tool) {
+    finalizeThoughts()
+    finishCurrentAgentBody()
     let toolsCard = document.querySelector('.active-tools-card')
     if (!toolsCard) {
       toolsCard = document.createElement('div')
@@ -245,7 +275,7 @@
   }
 
   // UI: Agent message chunk with smooth streaming
-  function renderAgentChunk(fullText) {
+  function renderAgentChunk(fullText, isReplay = false) {
     finalizeThoughts()
     let body = document.querySelector('.active-agent-body')
     if (!body) {
@@ -260,7 +290,12 @@
     }
 
     state.typewriterTargetText = fullText
-    startTypewriter(body)
+    if (isReplay) {
+      state.typewriterRenderedLen = fullText.length
+      body.innerHTML = formatMarkdown(fullText)
+    } else {
+      startTypewriter(body)
+    }
   }
 
   function startTypewriter(body) {
@@ -279,7 +314,15 @@
 
       const diff = target.length - currentLen
       const step = diff > 80 ? 8 : diff > 30 ? 4 : diff > 10 ? 2 : 1
-      state.typewriterRenderedLen = Math.min(target.length, currentLen + step)
+      let nextLen = Math.min(target.length, currentLen + step)
+      // Avoid slicing in the middle of UTF-16 surrogate pair
+      if (nextLen > 0 && nextLen < target.length) {
+        const code = target.charCodeAt(nextLen - 1)
+        if (code >= 0xd800 && code <= 0xdbff) {
+          nextLen++
+        }
+      }
+      state.typewriterRenderedLen = nextLen
       const visible = target.slice(0, state.typewriterRenderedLen)
       body.innerHTML = formatMarkdown(visible) + '<span class="typing-cursor"></span>'
       scrollChatBottom()
@@ -348,6 +391,7 @@
   }
 
   function enterDraftMode() {
+    if (state.isBusy) return
     state.activeSessionId = null
     finishCurrentTurn()
     renderSessionList()
@@ -394,33 +438,26 @@
         </div>
         <div class="task-meta">CWD: ${escapeHtml(sess.cwd || '/workspace')}</div>
       `
-      card.onclick = () => selectSession(sess.sessionId)
+      card.onclick = () => {
+        if (state.isBusy) return
+        selectSession(sess.sessionId)
+      }
       list.appendChild(card)
     })
   }
 
   function finishCurrentTurn() {
     finalizeThoughts()
-    if (state.typewriterTimer) {
-      clearInterval(state.typewriterTimer)
-      state.typewriterTimer = null
-    }
-    const body = document.querySelector('.active-agent-body')
-    if (body && state.typewriterTargetText) {
-      body.innerHTML = formatMarkdown(state.typewriterTargetText)
-    }
+    finishCurrentAgentBody()
     document.querySelectorAll('.active-tools-card').forEach(e => e.classList.remove('active-tools-card'))
-    document.querySelectorAll('.active-agent-body').forEach(e => e.classList.remove('active-agent-body'))
-    state.currentThoughtText = ''
-    state.currentAgentText = ''
-    state.typewriterTargetText = ''
-    state.typewriterRenderedLen = 0
   }
 
   function setBusy(busy) {
     state.isBusy = busy
     const sendBtn = $('send-btn')
     const input = $('chat-input')
+    const newTaskBtn = $('new-task-btn')
+    const taskList = $('task-list')
     if (sendBtn) {
       sendBtn.disabled = busy
       sendBtn.textContent = busy ? '执行中...' : '发送'
@@ -429,9 +466,19 @@
       input.disabled = busy
       if (!busy) input.focus()
     }
+    if (newTaskBtn) {
+      newTaskBtn.disabled = busy
+      newTaskBtn.style.opacity = busy ? '0.5' : '1'
+      newTaskBtn.style.pointerEvents = busy ? 'none' : 'auto'
+    }
+    if (taskList) {
+      taskList.style.pointerEvents = busy ? 'none' : 'auto'
+      taskList.style.opacity = busy ? '0.7' : '1'
+    }
   }
 
   async function selectSession(sessionId) {
+    if (state.isBusy) return
     state.activeSessionId = sessionId
     renderSessionList()
     $('chat-messages').innerHTML = ''
@@ -462,7 +509,7 @@
           renderToolCallUpdate(update)
         } else if (kind === 'agent_message_chunk') {
           state.currentAgentText += update.content?.text || ''
-          renderAgentChunk(state.currentAgentText)
+          renderAgentChunk(state.currentAgentText, true) // replay mode: static markdown
         }
       })
       finishCurrentTurn()
@@ -502,12 +549,14 @@
         state.sessions.unshift({ sessionId: res.sessionId, cwd: res.cwd })
         renderSessionList()
       } catch (e) {
+        input.value = text // Restore prompt so user does not lose input
         alert('启动任务失败: ' + e.message)
         setBusy(false)
         return
       }
     }
 
+    state.lastUserPrompt = text
     appendUserMessage(text)
     finishCurrentTurn()
 
@@ -519,7 +568,7 @@
       // Prompt completed, refresh files list
       await loadWorkspaceFiles()
     } catch (e) {
-      renderAgentChunk(`\n> ⚠️ 执行错误: ${e.message}`)
+      renderAgentChunk(`\n> ⚠️ 执行错误: ${e.message}`, false)
     } finally {
       finishCurrentTurn()
       setBusy(false)
@@ -719,6 +768,10 @@
     if (state.reconnectTimer) {
       clearTimeout(state.reconnectTimer)
       state.reconnectTimer = null
+    }
+    if (state.typewriterTimer) {
+      clearInterval(state.typewriterTimer)
+      state.typewriterTimer = null
     }
     if (state.ws) {
       state.ws.onclose = null

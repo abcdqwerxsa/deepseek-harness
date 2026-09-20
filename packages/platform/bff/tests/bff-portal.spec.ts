@@ -36,6 +36,7 @@ afterEach(async () => {
 class PortalFakeHub {
   permissionHandler: ((request: unknown) => Promise<unknown>) | undefined
   updateListener: ((sessionId: string, update: unknown) => void) | undefined
+  createdSessions: string[] = []
   emitUpdate(sessionId: string, update: unknown): void {
     this.updateListener?.(sessionId, update)
   }
@@ -54,7 +55,11 @@ async function startCockpitStack(hub?: PortalFakeHub): Promise<PlatformServer> {
     createRuntime: async tenantId => ({
       tenantId,
       request: async <T>(method: string): Promise<T> => {
-        if (method === 'session/new') return { sessionId: 'sess-portal-1' } as T
+        if (method === 'session/new') {
+          const sid = 'sess-portal-1'
+          if (hub) hub.createdSessions.push(sid)
+          return { sessionId: sid } as T
+        }
         if (method === 'session/prompt') return { stopReason: 'end_turn' } as T
         return {} as T
       },
@@ -215,9 +220,39 @@ describe('enterprise agent cockpit portal (Option B)', () => {
     })
 
     await vi.waitFor(() => {
-      const thoughtCard = doc.querySelector('.active-thought-card')
+      const thoughtCard = doc.querySelector('.thought-container')
       expect(thoughtCard).not.toBeNull()
       expect(thoughtCard!.textContent).toContain('Analyzing database records...')
+    })
+
+    // Test Cherry Studio thought fold/expand toggle
+    const thoughtContainer = doc.querySelector('.thought-container')!
+    const thoughtHeader = thoughtContainer.querySelector('.thought-header') as HTMLElement
+    const toggleText = thoughtContainer.querySelector('.thought-toggle-text') as HTMLElement
+    expect(toggleText.textContent).toBe('展开全部')
+    expect(thoughtContainer.classList.contains('expanded')).toBe(false)
+    thoughtHeader.click()
+    expect(thoughtContainer.classList.contains('expanded')).toBe(true)
+    expect(toggleText.textContent).toBe('收起')
+    thoughtHeader.click()
+    expect(thoughtContainer.classList.contains('expanded')).toBe(false)
+
+    // Emit agent message chunk to verify thoughts auto-finalize with char count
+    hub.emitUpdate('sess-portal-1', {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'Analysis finished.\n```python\nprint("ok")\n```' },
+    })
+
+    await vi.waitFor(() => {
+      const thoughtTitle = doc.querySelector('.thought-title')
+      expect(thoughtTitle?.textContent).toContain('已深度思考 (29 字)')
+      const agentMsg = doc.querySelector('.message-agent')
+      expect(agentMsg).not.toBeNull()
+      // Verify codeblock retains clean pre code without <br> inside pre
+      const preCode = agentMsg?.querySelector('pre code')
+      expect(preCode).not.toBeNull()
+      expect(preCode?.textContent).toContain('print("ok")')
+      expect(preCode?.innerHTML).not.toContain('<br>')
     })
 
     // 2. Trigger permission request
@@ -246,5 +281,85 @@ describe('enterprise agent cockpit portal (Option B)', () => {
       })
     })
     await permPromise
+  }, 20_000)
+
+  it('supports draft mission mode and isolates multi-turn tool calls without thought leaking', async () => {
+    const hub = new PortalFakeHub()
+    const server = await startCockpitStack(hub)
+    const dom = await openCockpit(server)
+    const doc = dom.window.document
+
+    await vi.waitFor(() => { expect(dom.window.__agentCockpit).toBeDefined() })
+    login(doc, MEMBER_TOKEN)
+
+    await vi.waitFor(() => {
+      expect(doc.getElementById('workspace-layout')!.hidden).toBe(false)
+    })
+
+    // Click New Task button: must enter draft mode without creating backend session
+    const newBtn = doc.getElementById('new-task-btn') as HTMLButtonElement
+    newBtn.click()
+
+    expect(dom.window.__agentCockpit.state.activeSessionId).toBeNull()
+    expect(doc.querySelector('.welcome-screen')).not.toBeNull()
+    expect(hub.createdSessions.length).toBe(0)
+
+    // Send first prompt: lazily creates session
+    const input = doc.getElementById('chat-input') as HTMLTextAreaElement
+    input.value = 'Investigate performance'
+    const sendBtn = doc.getElementById('send-btn') as HTMLButtonElement
+    sendBtn.click()
+
+    await vi.waitFor(() => {
+      expect(dom.window.__agentCockpit.state.activeSessionId).toBe('sess-portal-1')
+      expect(hub.createdSessions.length).toBe(1)
+    })
+
+    // Turn 1: Thought -> Tool Call -> Tool Result
+    hub.emitUpdate('sess-portal-1', {
+      sessionUpdate: 'agent_thought_chunk',
+      content: { type: 'text', text: 'First phase thinking...' },
+    })
+    await vi.waitFor(() => {
+      expect(doc.querySelector('.active-thought-container')).not.toBeNull()
+    })
+
+    hub.emitUpdate('sess-portal-1', {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'call-1',
+      title: 'grepSearch',
+      parameters: { query: 'perf' },
+    })
+
+    await vi.waitFor(() => {
+      // First thought must be finalized when tool starts
+      expect(doc.querySelector('.active-thought-container')).toBeNull()
+      expect(doc.querySelector('.tools-card')).not.toBeNull()
+      expect(doc.getElementById('tool-call-1')).not.toBeNull()
+    })
+
+    // Turn 2: Second thought after tool -> Final Answer
+    hub.emitUpdate('sess-portal-1', {
+      sessionUpdate: 'agent_thought_chunk',
+      content: { type: 'text', text: 'Second phase thinking...' },
+    })
+
+    await vi.waitFor(() => {
+      const thoughtCards = doc.querySelectorAll('.thought-container')
+      expect(thoughtCards.length).toBe(2)
+      expect(thoughtCards[0]!.textContent).toContain('First phase thinking...')
+      expect(thoughtCards[1]!.textContent).toContain('Second phase thinking...')
+    })
+
+    hub.emitUpdate('sess-portal-1', {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'All issues resolved.' },
+    })
+
+    await vi.waitFor(() => {
+      expect(doc.querySelector('.message-agent')?.textContent).toContain('All issues resolved.')
+      // Both thoughts should now be finalized
+      expect(doc.querySelectorAll('.active-thought-container').length).toBe(0)
+    })
   }, 20_000)
 })
