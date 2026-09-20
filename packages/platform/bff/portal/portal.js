@@ -55,6 +55,7 @@
   // Simple Markdown renderer with codeblock tokenization
   function formatMarkdown(text) {
     if (!text) return ''
+    text = text.replace(/\r\n/g, '\n')
     let html = escapeHtml(text)
     const codeBlocks = []
     html = html.replace(/```([a-z0-9_-]*)\n([\s\S]*?)```/g, (_, lang, code) => {
@@ -332,6 +333,7 @@
         body.innerHTML = formatMarkdown(target)
         if (state.turnEnded) {
           finishCurrentAgentBody()
+          setBusy(false)
         }
         scrollChatBottom()
         return
@@ -587,6 +589,9 @@
       } catch (e) {
         finalizeThoughts()
         if (userMsgWrapper) userMsgWrapper.remove()
+        if (!state.activeSessionId) {
+          renderWelcomeScreen()
+        }
         input.value = text // Restore prompt so user does not lose input
         alert('启动任务失败: ' + e.message)
         setBusy(false)
@@ -609,8 +614,8 @@
       finalizeThoughts()
       if (!state.typewriterTimer) {
         finishCurrentAgentBody()
+        setBusy(false)
       }
-      setBusy(false)
     }
   }
 
@@ -705,20 +710,25 @@
       await loadWorkspaceFiles()
       // Announce file upload to agent
       if (state.activeSessionId) {
+        setBusy(true)
+        finishCurrentTurn()
+        createOrGetThoughtContainer(true)
+        state.turnEnded = false
         await api(`/api/session/${encodeURIComponent(state.activeSessionId)}/prompt`, {
           method: 'POST',
           body: JSON.stringify({ text: `我已经将文件 ${file.name} 放入工作区，请查看并开始分析。` }),
         })
       }
     } catch (e) {
+      finalizeThoughts()
       alert('上传文件失败: ' + e.message)
     } finally {
       state.turnEnded = true
       finalizeThoughts()
       if (!state.typewriterTimer) {
         finishCurrentAgentBody()
+        setBusy(false)
       }
-      setBusy(false)
     }
   }
 
@@ -888,7 +898,7 @@
       $('token-input').value = savedToken
       login(savedToken)
     }
-    window.__agentCockpit = { login, logout, state, init, enterDraftMode }
+    window.__agentCockpit = { login, logout, state, init, enterDraftMode, selectSession }
   }
 
   if (document.readyState === 'loading') {

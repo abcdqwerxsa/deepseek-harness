@@ -37,6 +37,7 @@ class PortalFakeHub {
   permissionHandler: ((request: unknown) => Promise<unknown>) | undefined
   updateListener: ((sessionId: string, update: unknown) => void) | undefined
   promptHandler: (() => Promise<unknown>) | undefined
+  mockTranscripts = new Map<string, unknown[]>()
   createdSessions: string[] = []
   emitUpdate(sessionId: string, update: unknown): void {
     this.updateListener?.(sessionId, update)
@@ -88,7 +89,7 @@ async function startCockpitStack(hub?: PortalFakeHub): Promise<PlatformServer> {
   return server
 }
 
-async function openCockpit(server: PlatformServer, query = ''): Promise<JSDOM> {
+async function openCockpit(server: PlatformServer, query = '', hub?: PortalFakeHub): Promise<JSDOM> {
   const base = `http://127.0.0.1:${server.port}`
   const html = await (await fetch(`${base}/${query}`)).text()
   const pageErrors: unknown[] = []
@@ -100,8 +101,15 @@ async function openCockpit(server: PlatformServer, query = ''): Promise<JSDOM> {
     resources: 'usable',
     virtualConsole,
     beforeParse: (window) => {
-      window.fetch = (input: RequestInfo | URL, init?: RequestInit) =>
-        fetch(new URL(input instanceof URL ? input.href : typeof input === 'string' ? input : input.url, `${base}/`).toString(), init)
+      window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+        const urlStr = input instanceof URL ? input.href : typeof input === 'string' ? input : input.url
+        for (const [sid, rows] of (hub?.mockTranscripts || new Map())) {
+          if (urlStr.includes(`/api/session/${encodeURIComponent(sid)}/transcript`) || urlStr.includes(`/api/session/${sid}/transcript`)) {
+            return Promise.resolve(new Response(JSON.stringify(rows), { headers: { 'content-type': 'application/json' } }))
+          }
+        }
+        return fetch(new URL(urlStr, `${base}/`).toString(), init)
+      }
       // Real WebSocket client backed by 'ws'
       window.WebSocket = WsWebSocket as unknown as typeof WebSocket
     },
@@ -475,12 +483,12 @@ describe('enterprise agent cockpit portal (Option B)', () => {
     })
   }, 20_000)
 
-  it('streams multi-chunk message into a single unified bubble without tearing and respects inner thought scroll position', async () => {
+  it('streams multi-chunk message into a single unified bubble without tearing and preserves inner thought scroll position', async () => {
     const hub = new PortalFakeHub()
     let resolvePrompt: ((val: unknown) => void) | undefined
     hub.promptHandler = () => new Promise((resolve) => { resolvePrompt = resolve })
     const server = await startCockpitStack(hub)
-    const dom = await openCockpit(server)
+    const dom = await openCockpit(server, '', hub)
     const doc = dom.window.document
 
     await vi.waitFor(() => { expect(dom.window.__agentCockpit).toBeDefined() })
@@ -502,11 +510,29 @@ describe('enterprise agent cockpit portal (Option B)', () => {
     // 1. Thought stream without user toggle -> should auto-collapse on finalization
     hub.emitUpdate('sess-portal-1', {
       sessionUpdate: 'agent_thought_chunk',
-      content: { type: 'text', text: 'Step 1 thought: planning data format...' },
+      content: { type: 'text', text: 'Step 1 thought: planning data format...\nLong thought paragraph.' },
     })
 
     await vi.waitFor(() => {
       expect(doc.querySelector('.thought-content')?.textContent).toContain('Step 1 thought')
+    })
+
+    // Simulate user scrolled up to read earlier lines: scrollHeight=1000, clientHeight=400, scrollTop=100 (distance to bottom = 500 > 40)
+    const thoughtContent = doc.querySelector('.thought-content') as HTMLElement
+    Object.defineProperty(thoughtContent, 'scrollHeight', { value: 1000, configurable: true, writable: true })
+    Object.defineProperty(thoughtContent, 'clientHeight', { value: 400, configurable: true, writable: true })
+    thoughtContent.scrollTop = 100
+
+    // Emit another thought chunk: must NOT snatch user scroll back to bottom
+    hub.emitUpdate('sess-portal-1', {
+      sessionUpdate: 'agent_thought_chunk',
+      content: { type: 'text', text: '\nStep 2 thought: adding more planning steps.' },
+    })
+
+    await vi.waitFor(() => {
+      expect(thoughtContent.textContent).toContain('Step 2 thought')
+      // Scroll position must remain preserved at 100
+      expect(thoughtContent.scrollTop).toBe(100)
     })
 
     // 2. Stream chunk 1 of message
@@ -554,6 +580,41 @@ describe('enterprise agent cockpit portal (Option B)', () => {
       expect(doc.querySelectorAll('.message-agent').length).toBe(1)
       expect(agentMsg?.textContent).toContain('Hello! Here is your code: echo "$1"')
       expect(agentMsg?.querySelector('pre code')?.textContent).toBe('echo "$1"\n')
+    })
+  }, 20_000)
+
+  it('aggregates multi-chunk agent messages into a single bubble during transcript replay', async () => {
+    const hub = new PortalFakeHub()
+    hub.mockTranscripts.set('sess-replay-multi', [
+      { update: { sessionUpdate: 'user_message_chunk', content: { text: 'Summarize report' } } },
+      { update: { sessionUpdate: 'agent_thought_chunk', content: { text: 'Analyzing multi-part report data...' } } },
+      { update: { sessionUpdate: 'agent_message_chunk', content: { text: 'Section 1: Summary. ' } } },
+      { update: { sessionUpdate: 'agent_message_chunk', content: { text: 'Section 2: Details. ' } } },
+      { update: { sessionUpdate: 'agent_message_chunk', content: { text: 'Conclusion: All good.' } } },
+    ])
+    const server = await startCockpitStack(hub)
+    const dom = await openCockpit(server, '', hub)
+    const doc = dom.window.document
+
+    await vi.waitFor(() => { expect(dom.window.__agentCockpit).toBeDefined() })
+    login(doc, MEMBER_TOKEN)
+
+    await vi.waitFor(() => {
+      expect(doc.getElementById('workspace-layout')!.hidden).toBe(false)
+    })
+
+    // Trigger selectSession with multi-chunk transcript
+    await dom.window.__agentCockpit.selectSession('sess-replay-multi')
+
+    await vi.waitFor(() => {
+      // Must contain exactly 1 user message and 1 agent message bubble
+      expect(doc.querySelectorAll('.message-user').length).toBe(1)
+      expect(doc.querySelectorAll('.message-agent').length).toBe(1)
+      const agentBubble = doc.querySelector('.message-agent')
+      expect(agentBubble?.textContent).toContain('Section 1: Summary. Section 2: Details. Conclusion: All good.')
+      // Thought flow should also be rendered and finalized cleanly
+      expect(doc.querySelectorAll('.thought-container').length).toBe(1)
+      expect(doc.querySelector('.thought-title')?.textContent).toContain('已深度思考 (35 字)')
     })
   }, 20_000)
 })
