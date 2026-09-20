@@ -108,7 +108,14 @@ describe('model gateway over a real spawned runtime', () => {
     })
     expect(await prompted.json()).toEqual({ stopReason: 'end_turn' })
     const transcript = await (await api(platform, TOKEN_A, `/api/session/${sessionId}/transcript`)).json() as { update: string }[]
-    expect(transcript.some(row => (JSON.parse(row.update) as { content?: { text?: string } }).content?.text === 'GATEWAY E2E OK')).toBe(true)
+    // The child streams native chunks, so the marker may span several
+    // agent_message_chunk updates — concatenate before matching.
+    const streamed = transcript
+      .map(row => JSON.parse(row.update) as { sessionUpdate?: string; content?: { text?: string } })
+      .filter(row => row.sessionUpdate === 'agent_message_chunk')
+      .map(row => row.content?.text ?? '')
+      .join('')
+    expect(streamed.includes('GATEWAY E2E OK')).toBe(true)
     // The upstream saw the real key; the child env dump via audit proves
     // metering ran (tokens recorded under tenant alpha).
     const audit = await (await api(platform, TOKEN_A, '/api/audit')).json() as { event: string; detail: string }[]
@@ -172,16 +179,22 @@ describe('platform BFF over real spawned runtimes', () => {
     })
     expect(await prompted.json()).toEqual({ stopReason: 'end_turn' })
 
-    // Updates streamed to the tenant's socket.
-    expect(updates.some(update => (
-      (update as { sessionUpdate?: string; content?: { text?: string } }).sessionUpdate === 'agent_message_chunk'
-      && (update as { content?: { text?: string } }).content?.text === 'BFF E2E OK'
-    ))).toBe(true)
+    // Updates streamed to the tenant's socket (native chunks concatenated).
+    const streamed = updates
+      .map(update => update as { sessionUpdate?: string; content?: { text?: string } })
+      .filter(update => update.sessionUpdate === 'agent_message_chunk')
+      .map(update => update.content?.text ?? '')
+      .join('')
+    expect(streamed.includes('BFF E2E OK')).toBe(true)
 
     // Transcript persisted server-side and replayable.
     const transcript = await (await api(platform, TOKEN_A, `/api/session/${sessionId}/transcript`)).json() as { update: string }[]
-    const parsed = transcript.map(row => JSON.parse(row.update) as { content?: { text?: string } })
-    expect(parsed.some(row => row.content?.text === 'BFF E2E OK')).toBe(true)
+    const parsed = transcript.map(row => JSON.parse(row.update) as { sessionUpdate?: string; content?: { text?: string } })
+    expect(parsed
+      .filter(row => row.sessionUpdate === 'agent_message_chunk')
+      .map(row => row.content?.text ?? '')
+      .join('')
+      .includes('BFF E2E OK')).toBe(true)
 
     // Cross-tenant isolation: beta sees nothing of alpha's session.
     expect(await api(platform, TOKEN_B, '/api/sessions')).toBeDefined()
@@ -256,6 +269,7 @@ describe('platform BFF over real spawned runtimes', () => {
       expect(Object.keys(dump.env).sort()).toEqual([
         'DEEPSEEK_API_KEY',
         'DEEPSEEK_BASE_URL',
+        'DSH_ACP_LIVE_STREAM',
         'DSH_HOME',
         'DSH_TELEMETRY_DISABLED',
         'HOME',

@@ -33,7 +33,8 @@ RUN pnpm fetch
 # the tree by now) and builds.
 COPY . .
 RUN pnpm install --frozen-lockfile --offline \
-  && pnpm run build
+  && pnpm run build \
+  && pnpm --filter @deepseek-ai/dsh-platform-portal-web run build
 
 FROM ${NODE_IMAGE}
 ENV http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= all_proxy=
