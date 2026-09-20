@@ -1040,4 +1040,76 @@ describe('automation-only ACP bridge', () => {
     expect(updates[2]).toMatchObject({ sessionUpdate: 'agent_message_chunk', content: { text: 'hello ' } })
     expect(updates[3]).toMatchObject({ sessionUpdate: 'agent_message_chunk', content: { text: 'world' } })
   })
+
+  it('activates live streaming via DSH_ACP_LIVE_STREAM environment variable across resumeSession', async () => {
+    process.env.DSH_ACP_LIVE_STREAM = '1'
+    try {
+      harness = await makeBridgeHarness({
+        script: [
+          // Turn 1 prompt
+          [
+            { type: 'block-start', index: 0, blockType: 'reasoning' },
+            { type: 'reasoning-delta', index: 0, text: 'turn1 think ' },
+            { type: 'block-end', index: 0, block: { type: 'reasoning', text: 'turn1 think ' } },
+            { type: 'block-start', index: 1, blockType: 'text' },
+            { type: 'text-delta', index: 1, text: 'turn1 text' },
+            { type: 'block-end', index: 1, block: { type: 'text', text: 'turn1 text' } },
+            { type: 'usage', usage: { inputTokens: 5, outputTokens: 5 } },
+            { type: 'finish', reason: { kind: 'stop' } },
+          ],
+          // Turn 2 prompt after resumeSession
+          [
+            { type: 'block-start', index: 0, blockType: 'reasoning' },
+            { type: 'reasoning-delta', index: 0, text: 'turn2 think ' },
+            { type: 'block-end', index: 0, block: { type: 'reasoning', text: 'turn2 think ' } },
+            { type: 'block-start', index: 1, blockType: 'text' },
+            { type: 'text-delta', index: 1, text: 'turn2 text' },
+            { type: 'block-end', index: 1, block: { type: 'text', text: 'turn2 text' } },
+            { type: 'usage', usage: { inputTokens: 8, outputTokens: 8 } },
+            { type: 'finish', reason: { kind: 'stop' } },
+          ],
+        ],
+      })
+      await harness.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+      const { sessionId } = await harness.client.newSession({ cwd: process.cwd(), mcpServers: [] })
+
+      const r1 = await harness.client.prompt({
+        sessionId,
+        prompt: [{ type: 'text', text: 'turn 1' }],
+      })
+      expect(r1.stopReason).toBe('end_turn')
+      await vi.waitFor(() => { expect(harness!.updates.at(-1)?.sessionUpdate).toBe('usage_update') })
+
+      expect(harness.updates.map(u => u.sessionUpdate)).toEqual([
+        'agent_thought_chunk',
+        'agent_message_chunk',
+        'usage_update',
+      ])
+      expect(harness.updates[0]).toMatchObject({ sessionUpdate: 'agent_thought_chunk', content: { text: 'turn1 think ' } })
+      expect(harness.updates[1]).toMatchObject({ sessionUpdate: 'agent_message_chunk', content: { text: 'turn1 text' } })
+
+      // Close session and resume to test liveStream persistence across close and resume
+      await harness.client.closeSession({ sessionId })
+      harness.updates.length = 0
+      const resumed = await harness.client.resumeSession({ sessionId, cwd: process.cwd(), mcpServers: [] })
+      expect(Array.isArray(resumed.configOptions)).toBe(true)
+
+      const r2 = await harness.client.prompt({
+        sessionId,
+        prompt: [{ type: 'text', text: 'turn 2 after resume' }],
+      })
+      expect(r2.stopReason).toBe('end_turn')
+      await vi.waitFor(() => { expect(harness!.updates.at(-1)?.sessionUpdate).toBe('usage_update') })
+
+      expect(harness.updates.map(u => u.sessionUpdate)).toEqual([
+        'agent_thought_chunk',
+        'agent_message_chunk',
+        'usage_update',
+      ])
+      expect(harness.updates[0]).toMatchObject({ sessionUpdate: 'agent_thought_chunk', content: { text: 'turn2 think ' } })
+      expect(harness.updates[1]).toMatchObject({ sessionUpdate: 'agent_message_chunk', content: { text: 'turn2 text' } })
+    } finally {
+      delete process.env.DSH_ACP_LIVE_STREAM
+    }
+  })
 })

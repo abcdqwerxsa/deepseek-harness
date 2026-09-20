@@ -17,9 +17,6 @@
     currentThoughtText: '',
     currentAgentText: '',
     lastUserPrompt: '',
-    typewriterTimer: null,
-    typewriterTargetText: '',
-    typewriterRenderedLen: 0,
     turnEnded: false,
   }
 
@@ -223,9 +220,8 @@
 
       const hasPlaceholder = Boolean(content?.querySelector('.thought-placeholder'))
       const rawText = (content?.textContent || '').trim()
-      const isOnlyPlaceholder = hasPlaceholder && (!rawText || rawText.includes('正在梳理执行逻辑与任务规划'))
 
-      if (!rawText || isOnlyPlaceholder) {
+      if (!rawText || hasPlaceholder) {
         container.remove()
         return
       }
@@ -243,15 +239,11 @@
   }
 
   function finishCurrentAgentBody() {
-    if (state.typewriterTimer) {
-      clearInterval(state.typewriterTimer)
-      state.typewriterTimer = null
-    }
     const doc = typeof document !== 'undefined' ? document : null
     if (!doc) return
     const body = doc.querySelector('.active-agent-body')
     if (body) {
-      const text = state.currentAgentText || state.typewriterTargetText
+      const text = state.currentAgentText
       if (text) {
         body.innerHTML = formatMarkdown(text)
       }
@@ -260,8 +252,6 @@
     }
     doc.querySelectorAll('.active-agent-body').forEach(e => e.classList.remove('active-agent-body'))
     state.currentAgentText = ''
-    state.typewriterTargetText = ''
-    state.typewriterRenderedLen = 0
   }
 
   // UI: Tool Call
@@ -322,54 +312,15 @@
       body.className = 'agent-body active-agent-body'
       msgWrapper.appendChild(body)
       $('chat-messages').appendChild(msgWrapper)
-      state.typewriterTargetText = ''
-      state.typewriterRenderedLen = 0
     }
 
-    state.typewriterTargetText = fullText
+    state.currentAgentText = fullText
     if (isReplay) {
-      state.typewriterRenderedLen = fullText.length
       body.innerHTML = formatMarkdown(fullText)
     } else {
-      state.typewriterRenderedLen = fullText.length
       body.innerHTML = formatMarkdown(fullText) + '<span class="typing-cursor"></span>'
     }
     scrollChatBottom()
-  }
-
-  function startTypewriter(body) {
-    if (state.typewriterTimer) return
-    state.typewriterTimer = setInterval(() => {
-      const target = state.typewriterTargetText
-      const currentLen = state.typewriterRenderedLen
-
-      if (currentLen >= target.length) {
-        clearInterval(state.typewriterTimer)
-        state.typewriterTimer = null
-        body.innerHTML = formatMarkdown(target)
-        if (state.turnEnded) {
-          finishCurrentAgentBody()
-          setBusy(false)
-        }
-        scrollChatBottom()
-        return
-      }
-
-      const diff = target.length - currentLen
-      const step = diff > 80 ? 8 : diff > 30 ? 4 : diff > 10 ? 2 : 1
-      let nextLen = Math.min(target.length, currentLen + step)
-      // Avoid slicing in the middle of UTF-16 surrogate pair
-      if (nextLen > 0 && nextLen < target.length) {
-        const code = target.charCodeAt(nextLen - 1)
-        if (code >= 0xd800 && code <= 0xdbff) {
-          nextLen++
-        }
-      }
-      state.typewriterRenderedLen = nextLen
-      const visible = target.slice(0, state.typewriterRenderedLen)
-      body.innerHTML = formatMarkdown(visible) + '<span class="typing-cursor"></span>'
-      scrollChatBottom()
-    }, 18)
   }
 
   // UI: Permission request
@@ -739,10 +690,8 @@
     } finally {
       state.turnEnded = true
       finalizeThoughts()
-      if (!state.typewriterTimer) {
-        finishCurrentAgentBody()
-        setBusy(false)
-      }
+      finishCurrentAgentBody()
+      setBusy(false)
     }
   }
 
@@ -835,10 +784,6 @@
     if (state.reconnectTimer) {
       clearTimeout(state.reconnectTimer)
       state.reconnectTimer = null
-    }
-    if (state.typewriterTimer) {
-      clearInterval(state.typewriterTimer)
-      state.typewriterTimer = null
     }
     if (state.ws) {
       state.ws.onclose = null

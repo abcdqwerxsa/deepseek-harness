@@ -531,6 +531,8 @@ export class AcpSession {
         failures.push(error)
       }
       this.pendingSelections.clear()
+      this.attemptToStep.clear()
+      this.streamedSteps.clear()
       if (failures.length === 1) throw failures[0]
       /* v8 ignore start -- independent teardown failures can aggregate only under multiple simultaneous provider faults. */
       if (failures.length > 1) {

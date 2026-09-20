@@ -47,6 +47,7 @@ kind: "package-reference"
 | `provider` | — | 每个会话 agent 的提供方路由 |
 | `model` | — | 每个会话 agent 的模型 |
 | `sessionListPageSize` | `100` | 单页 `session/list` 返回的最大摘要数量 |
+| `liveStream` | `false` | 将瞬态 assistant stream 增量作为实时 session update 发送（亦可通过环境变量 `DSH_ACP_LIVE_STREAM=1` 开启） |
 
 生成的[配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-acp)是每个受支持字段及其 JSDoc 的穷尽式真源。
 

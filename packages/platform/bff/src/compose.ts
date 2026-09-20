@@ -61,6 +61,10 @@ export interface ComposeTenantRuntimeOptions {
     /** Shared secret; the BFF verifies tokens signed with it. */
     readonly secret: string
   }
+  /**
+   * Enable live streaming for ACP runtime. Defaults to true.
+   */
+  readonly liveStream?: boolean
 }
 
 export function composeTenantRuntimeFactory(options: ComposeTenantRuntimeOptions): TenantRuntimeFactory {
@@ -152,7 +156,7 @@ function prepareTenantSandbox(
     HOME: tenantDir,
     DSH_HOME: homeDir,
     DSH_TELEMETRY_DISABLED: '1',
-    DSH_ACP_LIVE_STREAM: '1',
+    DSH_ACP_LIVE_STREAM: options.liveStream === false ? '0' : '1',
     DEEPSEEK_API_KEY: options.apiKey,
   }
   if (process.env.LANG !== undefined) env.LANG = process.env.LANG

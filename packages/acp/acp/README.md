@@ -47,6 +47,7 @@ Every session the server creates uses the provider and model configured here. Bo
 | `provider` | — | Provider route for every session's agent |
 | `model` | — | Model for every session's agent |
 | `sessionListPageSize` | `100` | Maximum summaries returned in one `session/list` page |
+| `liveStream` | `false` | Emit transient assistant stream deltas as live session updates (or via `DSH_ACP_LIVE_STREAM=1`) |
 
 The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-acp) is the exhaustive source for every accepted field and its JSDoc.
 

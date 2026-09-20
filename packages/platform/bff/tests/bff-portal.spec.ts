@@ -718,4 +718,59 @@ describe('enterprise agent cockpit portal (Option B)', () => {
       expect(thoughts[0]?.classList.contains('expanded')).toBe(true)
     })
   }, 20_000)
+
+  it('correctly reconstructs and isolates multi-turn conversation and thought flows during transcript replay', async () => {
+    const hub = new PortalFakeHub()
+    hub.mockTranscripts.set('sess-replay-multiturn', [
+      // Turn 1
+      { update: { sessionUpdate: 'user_message_chunk', content: { text: 'First query: check data' } } },
+      { update: { sessionUpdate: 'agent_thought_chunk', content: { text: 'Turn 1 deep reasoning details...' } } },
+      { update: { sessionUpdate: 'agent_message_chunk', content: { text: 'Turn 1 answer part 1. ' } } },
+      { update: { sessionUpdate: 'agent_message_chunk', content: { text: 'Turn 1 answer part 2.' } } },
+      // Turn 2
+      { update: { sessionUpdate: 'user_message_chunk', content: { text: 'Second query: optimize logic' } } },
+      { update: { sessionUpdate: 'agent_thought_chunk', content: { text: 'Turn 2 deep reasoning details...' } } },
+      { update: { sessionUpdate: 'agent_message_chunk', content: { text: 'Turn 2 answer part 1. ' } } },
+      { update: { sessionUpdate: 'agent_message_chunk', content: { text: 'Turn 2 answer part 2.' } } },
+    ])
+    const server = await startCockpitStack(hub)
+    const dom = await openCockpit(server, '', hub)
+    const doc = dom.window.document
+
+    await vi.waitFor(() => { expect(dom.window.__agentCockpit).toBeDefined() })
+    login(doc, MEMBER_TOKEN)
+
+    await vi.waitFor(() => {
+      expect(doc.getElementById('workspace-layout')!.hidden).toBe(false)
+    })
+
+    // Replay multi-turn transcript
+    await dom.window.__agentCockpit.selectSession('sess-replay-multiturn')
+
+    await vi.waitFor(() => {
+      // Must contain exactly 2 user messages and 2 agent message bubbles
+      const userBubbles = doc.querySelectorAll('.message-user')
+      const agentBubbles = doc.querySelectorAll('.message-agent')
+      expect(userBubbles.length).toBe(2)
+      expect(agentBubbles.length).toBe(2)
+
+      expect(userBubbles[0]?.textContent).toContain('First query: check data')
+      expect(userBubbles[1]?.textContent).toContain('Second query: optimize logic')
+
+      expect(agentBubbles[0]?.textContent).toContain('Turn 1 answer part 1. Turn 1 answer part 2.')
+      expect(agentBubbles[1]?.textContent).toContain('Turn 2 answer part 1. Turn 2 answer part 2.')
+
+      // Exactly 2 thought containers, each finalized and isolated
+      const thoughtCards = doc.querySelectorAll('.thought-container')
+      expect(thoughtCards.length).toBe(2)
+      expect(thoughtCards[0]?.querySelector('.thought-content')?.textContent).toBe('Turn 1 deep reasoning details...')
+      expect(thoughtCards[1]?.querySelector('.thought-content')?.textContent).toBe('Turn 2 deep reasoning details...')
+      expect(thoughtCards[0]?.querySelector('.thought-title')?.textContent).toContain('已深度思考')
+      expect(thoughtCards[1]?.querySelector('.thought-title')?.textContent).toContain('已深度思考')
+
+      // Ensure active indicators are cleared
+      expect(doc.querySelectorAll('.active-thought-container').length).toBe(0)
+      expect(doc.querySelectorAll('.thought-pulse').length).toBe(0)
+    })
+  }, 20_000)
 })
