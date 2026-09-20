@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
-import { apiClient, type Principal, type SessionInfo } from './api'
+import { ApiError, apiClient, type Principal, type SessionInfo } from './api'
 import { applyUpdate, emptyChat, finishTurn, fromRows, setTurnError, type ChatState, type SessionUpdate } from './events'
 import { TurnView } from './blocks'
 
@@ -40,18 +40,29 @@ export function Chat({ token, principal, onLogout }: {
 
   const activeRef = useRef<string | null>(null)
   activeRef.current = activeId
-  const wsRef = useRef<WebSocket | null>(null)
+  // Set while a transcript resync fetch is in flight; WS updates landing in
+  // that window mark the snapshot stale so resync re-runs instead of letting
+  // the older snapshot clobber live chunks (reviewer P2).
+  const resyncingRef = useRef(false)
+  const staleRef = useRef(false)
   const stickRef = useRef(true)
   const streamRef = useRef<HTMLDivElement>(null)
 
   const resync = useCallback(async (sessionId: string | null) => {
     if (sessionId === null) return
+    resyncingRef.current = true
+    staleRef.current = false
     try {
       const rows = await apiClient.transcript(sessionId)
       if (activeRef.current === sessionId) dispatch({ type: 'rows', rows })
     } catch {
       /* transcript fetch failure keeps current view; next reconnect retries */
+    } finally {
+      resyncingRef.current = false
     }
+    // A stream still running through the fetch window keeps dirtying the
+    // snapshot; one more pass converges once it settles.
+    if (staleRef.current && activeRef.current === sessionId) void resync(sessionId)
   }, [])
 
   // One WebSocket per login. On (re)connect, rebuild from the transcript so
@@ -62,8 +73,7 @@ export function Chat({ token, principal, onLogout }: {
     let closed = false
     let ws: WebSocket | undefined
     const connect = () => {
-      ws = new WebSocket(`${protocol}//${location.host}/ws?token=${encodeURIComponent(token)}`)
-      wsRef.current = ws
+      const ws = new WebSocket(`${protocol}//${location.host}/ws?token=${encodeURIComponent(token)}`)
       ws.onopen = () => {
         setConnected(true)
         void resync(activeRef.current)
@@ -72,6 +82,7 @@ export function Chat({ token, principal, onLogout }: {
         try {
           const msg = JSON.parse(String(event.data)) as WsMessage
           if (msg.type === 'session-update' && msg.sessionId === activeRef.current && msg.update !== undefined) {
+            if (resyncingRef.current) staleRef.current = true
             dispatch({ type: 'update', update: msg.update })
           }
         } catch {
@@ -90,15 +101,17 @@ export function Chat({ token, principal, onLogout }: {
       closed = true
       if (timer !== undefined) clearTimeout(timer)
       ws?.close()
-      wsRef.current = null
     }
   }, [token, resync])
 
   useEffect(() => {
     void apiClient.sessions().then((data) => {
       setSessions(data.sessions)
-    }).catch(() => { /* sidebar shows empty; sessions retry on next action */ })
-  }, [])
+    }).catch(err => {
+      // An expired session must leave the dead shell, not linger in it.
+      if (err instanceof ApiError && err.status === 401) onLogout()
+    })
+  }, [onLogout])
 
   const selectSession = useCallback((sessionId: string) => {
     setActiveId(sessionId)
@@ -131,14 +144,21 @@ export function Chat({ token, principal, onLogout }: {
       }
       // The user bubble arrives via the WS echo the BFF broadcasts — no
       // local append, so reload/replay/live render identically.
-      await apiClient.prompt(sessionId, text)
-      dispatch({ type: 'finish' })
+      // Snapshot the session: a switch or a second operator on another tab
+      // must not settle or error the turn now displayed (reviewer P2).
+      const prompted = sessionId
+      await apiClient.prompt(prompted, text)
+      if (activeRef.current === prompted) dispatch({ type: 'finish' })
     } catch (err) {
-      dispatch({ type: 'error', message: err instanceof Error ? err.message : String(err) })
+      if (err instanceof ApiError && err.status === 401) {
+        onLogout()
+        return
+      }
+      if (activeRef.current === sessionId) dispatch({ type: 'error', message: err instanceof Error ? err.message : String(err) })
     } finally {
       setPosting(false)
     }
-  }, [draft, posting])
+  }, [draft, posting, onLogout])
 
   const onScroll = () => {
     const el = streamRef.current

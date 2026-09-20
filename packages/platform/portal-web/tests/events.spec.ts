@@ -4,6 +4,7 @@ import {
   emptyChat,
   finishTurn,
   fromRows,
+  rowUpdate,
   setTurnError,
   type Block,
   type ChatState,
@@ -112,6 +113,48 @@ describe('turn completion and errors', () => {
     const state = setTurnError(fold([user('q')]), 'boom')
     expect(state.turns).toHaveLength(1)
     expect(state.turns[0]?.error).toBe('boom')
+  })
+})
+
+describe('edge branches', () => {
+  it('safeParams handles null and unserializable parameters', () => {
+    const withNull = fold([user('q'), { sessionUpdate: 'tool_call', toolCallId: 'n1', parameters: null }])
+    expect(withNull.turns[0]?.blocks[0]).toMatchObject({ type: 'tool', call: { params: '' } })
+
+    const circular: Record<string, unknown> = {}
+    circular.self = circular
+    const withCyclic = fold([user('q'), { sessionUpdate: 'tool_call', toolCallId: 'n2', parameters: circular }])
+    expect(withCyclic.turns[0]?.blocks[0]).toMatchObject({ type: 'tool', call: { params: '[object Object]' } })
+  })
+
+  it('ignores unknown update kinds and empty chunks', () => {
+    const state = fold([user('q')])
+    expect(applyUpdate(state, { sessionUpdate: 'config_option_update' })).toBe(state)
+    expect(applyUpdate(state, { sessionUpdate: 'agent_message_chunk', content: { text: '' } })).toBe(state)
+    expect(applyUpdate(state, { sessionUpdate: 'agent_thought_chunk' })).toBe(state)
+  })
+
+  it('finishTurn on an empty chat is identity', () => {
+    expect(finishTurn(emptyChat)).toBe(emptyChat)
+  })
+
+  it('rowUpdate filters non-object and malformed rows', () => {
+    expect(rowUpdate({ update: 5 })).toBeUndefined()
+    expect(rowUpdate({ update: '{not json' })).toBeUndefined()
+    expect(rowUpdate({})).toBeUndefined()
+  })
+
+  it('tolerates tool events without ids', () => {
+    const anon = fold([user('q'), { sessionUpdate: 'tool_call', kind: 'read' }])
+    expect(anon.turns[0]?.blocks[0]).toMatchObject({ type: 'tool', call: { title: 'read' } })
+
+    const noUpdateId = applyUpdate(anon, { sessionUpdate: 'tool_call_update' })
+    expect(noUpdateId).toBe(anon)
+
+    // fromRows skips garbage rows instead of aborting the replay
+    const mixed = fromRows([{ update: 42 }, { update: user('q') }, { update: '{oops' }, { update: body('hi') }])
+    expect(mixed.turns).toHaveLength(1)
+    expect(mixed.turns[0]?.blocks[0]).toMatchObject({ type: 'body', text: 'hi' })
   })
 })
 

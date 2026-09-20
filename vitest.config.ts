@@ -220,6 +220,13 @@ export default defineConfig({
         'packages/self-modification/*/src/**/*.{ts,tsx}',
         // A killed executable lint-contract test can leave a non-product source probe behind.
         'packages/*/*/src/oxlint-contract-*.ts',
+        // Platform portal SPA shell: the turn reducer (src/events.ts) stays
+        // gated; the React components and fetch/WS glue need the browser-grade
+        // full-page lane the deploy milestone owns. TODO(gui): cover and remove
+        // as that lane lands.
+        'packages/platform/portal-web/src/*.tsx',
+        'packages/platform/portal-web/src/api.ts',
+        'packages/platform/portal-web/src/markdown.ts',
         // Client/web UI files whose remaining branches need a browser-grade
         // harness the jsdom lane doesn't cover yet. TODO(gui): cover and
         // remove as the client test lane matures.

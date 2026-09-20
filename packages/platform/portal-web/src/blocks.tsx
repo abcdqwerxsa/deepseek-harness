@@ -18,7 +18,8 @@ export function TurnView({ turn }: { turn: Turn }) {
 
 /** Collapsible thought segment; streaming keeps it open, settling folds it. */
 function ThoughtCard({ text, done }: { text: string; done: boolean }) {
-  const [open, setOpen] = useState(true)
+  // Settled cards mount collapsed (replay must not flash open first).
+  const [open, setOpen] = useState(!done)
   const userToggled = useRef(false)
 
   useEffect(() => {

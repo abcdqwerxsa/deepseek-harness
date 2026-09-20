@@ -1,4 +1,4 @@
-/** BFF REST client. Token lives in sessionStorage; 401 clears it and reloads to login. */
+/** BFF REST client. Token lives in sessionStorage; 401 clears it (the Chat shell then routes back to login). */
 
 export interface Principal {
   readonly deptId: string
