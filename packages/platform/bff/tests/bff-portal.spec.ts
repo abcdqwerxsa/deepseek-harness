@@ -254,6 +254,9 @@ describe('enterprise agent cockpit portal (Option B)', () => {
     await vi.waitFor(() => {
       const thoughtTitle = doc.querySelector('.thought-title')
       expect(thoughtTitle?.textContent).toContain('已深度思考 (29 字)')
+      // Since user explicitly expanded the container, it must remain expanded after finalization
+      expect(thoughtContainer.classList.contains('expanded')).toBe(true)
+      expect(toggleText.textContent).toBe('收起')
       const agentMsg = doc.querySelector('.message-agent')
       expect(agentMsg).not.toBeNull()
       // Verify codeblock retains clean pre code without <br> inside pre
@@ -469,6 +472,88 @@ describe('enterprise agent cockpit portal (Option B)', () => {
       const thoughtTitle = doc.querySelector('.thought-title')
       expect(thoughtTitle?.textContent).toContain('已深度思考')
       expect(doc.querySelector('.thought-pulse')).toBeNull()
+    })
+  }, 20_000)
+
+  it('streams multi-chunk message into a single unified bubble without tearing and respects inner thought scroll position', async () => {
+    const hub = new PortalFakeHub()
+    let resolvePrompt: ((val: unknown) => void) | undefined
+    hub.promptHandler = () => new Promise((resolve) => { resolvePrompt = resolve })
+    const server = await startCockpitStack(hub)
+    const dom = await openCockpit(server)
+    const doc = dom.window.document
+
+    await vi.waitFor(() => { expect(dom.window.__agentCockpit).toBeDefined() })
+    login(doc, MEMBER_TOKEN)
+
+    await vi.waitFor(() => {
+      expect(doc.getElementById('workspace-layout')!.hidden).toBe(false)
+    })
+
+    const input = doc.getElementById('chat-input') as HTMLTextAreaElement
+    input.value = 'Stream test across multiple chunks'
+    const sendBtn = doc.getElementById('send-btn') as HTMLButtonElement
+    sendBtn.click()
+
+    await vi.waitFor(() => {
+      expect(dom.window.__agentCockpit.state.activeSessionId).toBe('sess-portal-1')
+    })
+
+    // 1. Thought stream without user toggle -> should auto-collapse on finalization
+    hub.emitUpdate('sess-portal-1', {
+      sessionUpdate: 'agent_thought_chunk',
+      content: { type: 'text', text: 'Step 1 thought: planning data format...' },
+    })
+
+    await vi.waitFor(() => {
+      expect(doc.querySelector('.thought-content')?.textContent).toContain('Step 1 thought')
+    })
+
+    // 2. Stream chunk 1 of message
+    hub.emitUpdate('sess-portal-1', {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'Hello! ' },
+    })
+
+    await vi.waitFor(() => {
+      expect(doc.querySelectorAll('.message-agent').length).toBe(1)
+      expect(doc.querySelector('.thought-title')?.textContent).toContain('已深度思考')
+      // Container was NOT user-toggled: must auto-collapse to "展开全部"
+      const tc = doc.querySelector('.thought-container')
+      expect(tc?.classList.contains('expanded')).toBe(false)
+      expect(tc?.querySelector('.thought-toggle-text')?.textContent).toBe('展开全部')
+    })
+
+    // 3. Stream chunk 2 of message
+    hub.emitUpdate('sess-portal-1', {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'Here is your `code`: ' },
+    })
+
+    await vi.waitFor(() => {
+      // Must NOT fragment into multiple agent bubbles
+      expect(doc.querySelectorAll('.message-agent').length).toBe(1)
+    })
+
+    // 4. Stream chunk 3 containing dollar sign variables in markdown (testing Issue 4)
+    hub.emitUpdate('sess-portal-1', {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: '```bash\necho "$1"\n```' },
+    })
+
+    await vi.waitFor(() => {
+      expect(doc.querySelectorAll('.message-agent').length).toBe(1)
+    })
+
+    // Complete the turn
+    resolvePrompt!({ stopReason: 'end_turn' })
+    await vi.waitFor(() => {
+      expect(dom.window.__agentCockpit.state.isBusy).toBe(false)
+      // Verify final content is seamlessly aggregated in one single bubble with intact code block
+      const agentMsg = doc.querySelector('.message-agent')
+      expect(doc.querySelectorAll('.message-agent').length).toBe(1)
+      expect(agentMsg?.textContent).toContain('Hello! Here is your code: echo "$1"')
+      expect(agentMsg?.querySelector('pre code')?.textContent).toBe('echo "$1"\n')
     })
   }, 20_000)
 })

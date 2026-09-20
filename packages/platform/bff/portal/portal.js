@@ -20,6 +20,7 @@
     typewriterTimer: null,
     typewriterTargetText: '',
     typewriterRenderedLen: 0,
+    turnEnded: false,
   }
 
   // API helper
@@ -70,10 +71,10 @@
     html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     html = html.replace(/\n/g, '<br>')
     inlineCodes.forEach((codeHtml, i) => {
-      html = html.replace(`@@INLINE_CODE_${i}@@`, codeHtml)
+      html = html.replace(`@@INLINE_CODE_${i}@@`, () => codeHtml)
     })
     codeBlocks.forEach((blockHtml, i) => {
-      html = html.replace(`@@CODE_BLOCK_${i}@@`, blockHtml)
+      html = html.replace(`@@CODE_BLOCK_${i}@@`, () => blockHtml)
     })
     return html
   }
@@ -195,12 +196,10 @@
     const container = createOrGetThoughtContainer(true)
     const content = container.querySelector('.thought-content')
     if (content) {
+      const wasNearBottom = content.scrollHeight - content.scrollTop - content.clientHeight < 40
       content.textContent = fullText
-      if (container.classList.contains('expanded')) {
-        const isNearBottom = content.scrollHeight - content.scrollTop - content.clientHeight < 40
-        if (isNearBottom) {
-          content.scrollTop = content.scrollHeight
-        }
+      if (container.classList.contains('expanded') && wasNearBottom) {
+        content.scrollTop = content.scrollHeight
       }
     }
     scrollChatBottom()
@@ -316,10 +315,6 @@
     if (isReplay) {
       state.typewriterRenderedLen = fullText.length
       body.innerHTML = formatMarkdown(fullText)
-      body.classList.remove('active-agent-body')
-      state.currentAgentText = ''
-      state.typewriterTargetText = ''
-      state.typewriterRenderedLen = 0
     } else {
       startTypewriter(body)
     }
@@ -335,10 +330,9 @@
         clearInterval(state.typewriterTimer)
         state.typewriterTimer = null
         body.innerHTML = formatMarkdown(target)
-        body.classList.remove('active-agent-body')
-        state.currentAgentText = ''
-        state.typewriterTargetText = ''
-        state.typewriterRenderedLen = 0
+        if (state.turnEnded) {
+          finishCurrentAgentBody()
+        }
         scrollChatBottom()
         return
       }
@@ -559,6 +553,7 @@
     wrapper.innerHTML = `<div class="user-bubble">${escapeHtml(text)}</div>`
     $('chat-messages').appendChild(wrapper)
     scrollChatBottom()
+    return wrapper
   }
 
   async function sendPrompt() {
@@ -571,9 +566,10 @@
     setBusy(true)
 
     state.lastUserPrompt = text
-    appendUserMessage(text)
+    const userMsgWrapper = appendUserMessage(text)
     finishCurrentTurn()
     createOrGetThoughtContainer(true)
+    state.turnEnded = false
 
     // Lazy session creation: only initialize session and backend runtime when user sends first prompt
     if (!state.activeSessionId) {
@@ -590,6 +586,7 @@
         renderSessionList()
       } catch (e) {
         finalizeThoughts()
+        if (userMsgWrapper) userMsgWrapper.remove()
         input.value = text // Restore prompt so user does not lose input
         alert('启动任务失败: ' + e.message)
         setBusy(false)
@@ -608,6 +605,7 @@
       finalizeThoughts()
       renderAgentChunk(`\n> ⚠️ 执行错误: ${e.message}`, false)
     } finally {
+      state.turnEnded = true
       finalizeThoughts()
       if (!state.typewriterTimer) {
         finishCurrentAgentBody()
@@ -715,6 +713,7 @@
     } catch (e) {
       alert('上传文件失败: ' + e.message)
     } finally {
+      state.turnEnded = true
       finalizeThoughts()
       if (!state.typewriterTimer) {
         finishCurrentAgentBody()
