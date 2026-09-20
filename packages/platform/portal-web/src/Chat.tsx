@@ -53,25 +53,37 @@ export function Chat({ token, principal, onLogout }: {
   // the older snapshot clobber live chunks (reviewer P2).
   const resyncingRef = useRef(false)
   const staleRef = useRef(false)
+  // Serialized resync queue: concurrent triggers (WS onopen + session select)
+  // must not interleave fetches, or the later-dispatched older snapshot
+  // clobbers a newer one with no stale marking (reviewer residual P2).
+  const resyncQueueRef = useRef<Promise<void>>(Promise.resolve())
   const sendRef = useRef<WebSocket | null>(null)
   const stickRef = useRef(true)
   const streamRef = useRef<HTMLDivElement>(null)
 
-  const resync = useCallback(async (sessionId: string | null) => {
-    if (sessionId === null) return
-    resyncingRef.current = true
-    staleRef.current = false
-    try {
-      const rows = await apiClient.transcript(sessionId)
-      if (activeRef.current === sessionId) dispatch({ type: 'rows', rows })
-    } catch {
-      /* transcript fetch failure keeps current view; next reconnect retries */
-    } finally {
-      resyncingRef.current = false
-    }
-    // A stream still running through the fetch window keeps dirtying the
-    // snapshot; one more pass converges once it settles.
-    if (staleRef.current && activeRef.current === sessionId) void resync(sessionId)
+  const resync = useCallback((sessionId: string | null): Promise<void> => {
+    if (sessionId === null) return Promise.resolve()
+    const run = resyncQueueRef.current.then(async () => {
+      // Bounded passes: each rerun requires updates that landed inside the
+      // previous fetch window, so a live stream converges once it settles.
+      for (let pass = 0; pass < 5; pass++) {
+        if (activeRef.current !== sessionId) return
+        resyncingRef.current = true
+        staleRef.current = false
+        let fetched = true
+        try {
+          const rows = await apiClient.transcript(sessionId)
+          if (activeRef.current === sessionId) dispatch({ type: 'rows', rows })
+        } catch {
+          fetched = false /* transcript fetch failure keeps current view; next reconnect retries */
+        } finally {
+          resyncingRef.current = false
+        }
+        if (!fetched || !(staleRef.current && activeRef.current === sessionId)) return
+      }
+    })
+    resyncQueueRef.current = run.then(() => undefined, () => undefined)
+    return run
   }, [])
 
   // One WebSocket per login. On (re)connect, rebuild from the transcript so
